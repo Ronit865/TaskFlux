@@ -20,21 +20,12 @@ NTFY_URL=https://ntfy.sh/your_topic_name
 CONTINUOUS_MODE=true
 ```
 
-### 📋 Configuration Details:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `EMAIL` | Your TaskFlux account email | `rajdhimmar4@gmail.com` |
-| `PASSWORD` | Your TaskFlux account password | `mySecurePassword123` |
-| `NTFY_URL` | ntfy.sh notification URL | `https://ntfy.sh/taskflux_bot` |
-| `CONTINUOUS_MODE` | Enable rapid checking (30-60s intervals) | `true` ⭐ RECOMMENDED |
-
 ### 🔔 Setting up ntfy Notifications:
 
 1. **Install ntfy app** on your phone ([Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) / [iOS](https://apps.apple.com/us/app/ntfy/id1625396347))
-2. **Choose a unique topic name** (e.g., `taskflux_raj_2025`)
+2. **Choose a unique topic name** (e.g., `taskflux_name_2025`)
 3. **Subscribe to your topic** in the ntfy app
-4. **Add to `.env`**: `NTFY_URL=https://ntfy.sh/taskflux_raj_2025`
+4. **Add to `.env`**: `NTFY_URL=https://ntfy.sh/taskflux_name_2025`
 
 ---
 
@@ -269,7 +260,7 @@ pytz==2023.3
 ## 📊 Sample Output
 
 ```
-🔐 Logging in as rajdhimmar4@gmail.com...
+🔐 Logging in as example@gmail.com...
 ✅ Login successful!
 
 =========================================

@@ -20,9 +20,9 @@ class ContinuousTaskChecker:
         self.user_id = None
         
         # Rapid checking intervals for continuous mode (in seconds)
-        self.min_check_interval = 30   # 30 seconds when ready to claim
-        self.max_check_interval = 120  # 2 minutes when tasks not available
-        self.current_check_interval = 60  # Start with 1 minute
+        self.min_check_interval = 3    # 3 seconds minimum
+        self.max_check_interval = 30   # 30 seconds maximum
+        self.current_check_interval = 3  # Start with 3 seconds
         
         # Task availability tracking
         self.consecutive_empty_checks = 0
@@ -219,20 +219,12 @@ class ContinuousTaskChecker:
         if not tasks:
             self.consecutive_empty_checks += 1
             print(f"📭 No tasks available (empty check #{self.consecutive_empty_checks})")
-            
-            if self.consecutive_empty_checks >= 3:
-                increment = 15
-                self.current_check_interval = min(self.max_check_interval, 
-                                                  self.min_check_interval + (self.consecutive_empty_checks * increment))
-                print(f"⏱️ Adjusting check interval to {self.current_check_interval}s")
-            
             return False
         
         if self.consecutive_empty_checks > 0:
             print(f"✨ Tasks appeared after {self.consecutive_empty_checks} empty checks!")
         
         self.consecutive_empty_checks = 0
-        self.current_check_interval = self.min_check_interval
         self.last_task_seen = datetime.now()
         self.tasks_seen_today += len(tasks)
         
@@ -299,7 +291,7 @@ class ContinuousTaskChecker:
         print(f"\n{'='*60}")
         print(f"🚀 CONTINUOUS TASK CHECKER STARTED")
         print(f"{'='*60}")
-        print(f"⚡ Mode: RAPID (30-120 second checks)")
+        print(f"⚡ Mode: ULTRA RAPID (3 second checks)")
         print(f"🎯 Focus: Monitoring tasks and sending notifications")
         print(f"{'='*60}\n")
         
@@ -316,8 +308,8 @@ class ContinuousTaskChecker:
                     # Check tasks and send notifications
                     found_claimable = self.check_and_notify_tasks()
                     
-                    # Use adaptive interval
-                    sleep_time = self.current_check_interval
+                    # Always use 3 second interval
+                    sleep_time = 3
                     
                     if found_claimable:
                         print(f"✅ Claimable tasks found! Checking again in {sleep_time}s")

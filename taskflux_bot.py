@@ -46,6 +46,8 @@ class TaskFluxBot:
         self.task_deadline = None
         self.deadline_warning_sent = False
         self.deadline_final_warning_sent = False
+        self.current_task_id = None  # Track current assigned task ID
+        self.current_task_type = None  # Track current task type (RedditCommentTask or RedditReplyTask)
         
         # Suspicious words/patterns that might trigger AutoMod or get removed
         self.suspicious_patterns = [
@@ -128,21 +130,29 @@ class TaskFluxBot:
     def send_notification(self, title, message, priority="default", tags=None):
         """Send notification via ntfy"""
         try:
+            # Remove emojis and non-Latin-1 characters from title for HTTP header compatibility
+            # HTTP headers must be Latin-1 compatible and cannot have leading/trailing whitespace
+            clean_title = title.encode('latin-1', errors='ignore').decode('latin-1').strip()
+            if not clean_title:
+                # If title becomes empty after removing emojis, use a default
+                clean_title = "TaskFlux Notification"
+            
             headers = {
-                "Priority": priority
+                "Priority": priority,
+                "Title": clean_title,
+                "Content-Type": "text/plain; charset=utf-8"
             }
             if tags:
                 headers["Tags"] = tags
             
-            # Encode title and message as UTF-8 and set proper headers
+            # Send full message (including emojis) as UTF-8 encoded bytes
+            # Include original title with emojis in the message body
+            full_message = f"{title}\n\n{message}" if title != clean_title else message
+            
             response = requests.post(
                 self.ntfy_url,
-                data=message.encode('utf-8'),
-                headers={
-                    **headers,
-                    "Title": title.encode('utf-8').decode('utf-8'),
-                    "Content-Type": "text/plain; charset=utf-8"
-                }
+                data=full_message.encode('utf-8'),
+                headers=headers
             )
             
             if response.status_code != 200:
@@ -153,8 +163,9 @@ class TaskFluxBot:
     def login(self):
         """Login to TaskFlux"""
         try:
-            print("\n=========================================")
+            print("\n" + "="*60)
             print(f"🔐 Logging in as {self.email}...")
+            print("="*60)
             
             # Actual TaskFlux login endpoint
             login_url = f"{self.base_url}/api/users/login"
@@ -215,7 +226,7 @@ class TaskFluxBot:
                     # Response might be empty or different format
                     pass
                 
-                print(f"✅ Login successful! (User ID: {self.user_id if self.user_id else 'N/A'})")
+                print(f"✅ Login successful!")
                 
                 # Get current mode and IST time
                 continuous_mode = os.getenv("CONTINUOUS_MODE", "false").lower() == "true"
@@ -353,14 +364,16 @@ class TaskFluxBot:
                 # Return tasks array - might be direct array or nested
                 all_tasks = tasks if isinstance(tasks, list) else tasks.get('tasks', [])
                 
-                # Filter out tasks that are already assigned to us
+                # Filter out tasks that are already assigned
                 available_tasks = []
                 for task in all_tasks:
                     status = task.get('status', '').lower()
                     assigned_to = task.get('assignedTo', '')
                     
-                    # Only include tasks that are NOT assigned
-                    if status != 'assigned' and not assigned_to:
+                    # Include tasks that are available (assignment-pending or unassigned)
+                    # Exclude tasks that are assigned (to anyone)
+                    if status in ['assignment-pending', 'pending', 'available'] and not assigned_to:
+                        # This task is available to claim
                         available_tasks.append(task)
                     elif status == 'assigned' and assigned_to == self.user_id:
                         # This is our assigned task - track it
@@ -406,14 +419,10 @@ class TaskFluxBot:
         try:
             print(f"🎯 Attempting to claim task {task_id}...")
             
-            # TaskFlux claim endpoint - trying most common pattern
-            # This might need adjustment based on actual API response
-            claim_url = f"{self.base_url}/api/tasks/claim"
+            # TaskFlux claim endpoint - taskId in URL path
+            claim_url = f"{self.base_url}/api/tasks/assign-task-to-self/{task_id}"
             
-            # Payload might use different field names
-            payload = {"taskId": task_id}
-            
-            response = self.session.post(claim_url, json=payload)
+            response = self.session.put(claim_url)
             
             if response.status_code == 200:
                 try:
@@ -558,7 +567,7 @@ class TaskFluxBot:
         try:
             print(f"📤 Submitting task {task_id}...")
             
-            submit_url = f"{self.base_url}/api/tasks/{task_id}/submit"
+            submit_url = f"{self.base_url}/api/tasks/{task_id}/submission"
             
             response = self.session.post(submit_url, json=submission_data)
             
@@ -578,6 +587,8 @@ class TaskFluxBot:
                 self.task_deadline = None
                 self.deadline_warning_sent = False
                 self.deadline_final_warning_sent = False
+                self.current_task_id = None
+                self.current_task_type = None
                 
                 self.send_notification(
                     "Task Completed",
@@ -658,6 +669,8 @@ class TaskFluxBot:
                 self.task_deadline = None
                 self.deadline_warning_sent = False
                 self.deadline_final_warning_sent = False
+                self.current_task_id = None
+                self.current_task_type = None
                 
                 # Only send notification if we were tracking a task
                 if was_tracking:
@@ -676,7 +689,7 @@ class TaskFluxBot:
                         "Task Completed",
                         completion_msg,
                         priority="high",
-                        tags="party_popper,white_check_mark,money_bag"
+                        tags="white_check_mark"
                     )
                     
                     print(f"🎉 Task completion confirmed!")
@@ -760,6 +773,8 @@ class TaskFluxBot:
                         self.task_deadline = None
                         self.deadline_warning_sent = False
                         self.deadline_final_warning_sent = False
+                        self.current_task_id = None
+                        self.current_task_type = None
                         
                         return True
                     
@@ -839,6 +854,8 @@ class TaskFluxBot:
             self.task_deadline = None
             self.deadline_warning_sent = False
             self.deadline_final_warning_sent = False
+            self.current_task_id = None
+            self.current_task_type = None
             return
         
         # Send warning at 2 hours remaining
@@ -869,9 +886,9 @@ class TaskFluxBot:
             self.deadline_final_warning_sent = True
     
     def check_for_assigned_task_on_server(self):
-        """Check if there's an assigned task on the server using can-assign-task-to-self endpoint"""
+        """Check if there's an assigned task on the server"""
         try:
-            # Use can-assign-task-to-self endpoint - most reliable for checking assigned tasks
+            # Method 1: Check can-assign-task-to-self endpoint (fastest)
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
             response = self.session.get(check_url)
             
@@ -888,28 +905,21 @@ class TaskFluxBot:
                     # Check if the reason indicates an assigned task
                     if 'assigned task' in reason.lower() or 'complete it before' in reason.lower():
                         return True
-                    
-                # Also check task-summary endpoint as fallback
-                summary_url = f"{self.base_url}/api/tasks/task-summary"
-                summary_response = self.session.get(summary_url)
+            
+            # Method 2: Check task-pool for tasks assigned to us (most reliable)
+            tasks_url = f"{self.base_url}/api/tasks/task-pool"
+            pool_response = self.session.get(tasks_url)
+            
+            if pool_response.status_code == 200:
+                pool_data = pool_response.json()
+                all_tasks = pool_data if isinstance(pool_data, list) else pool_data.get('tasks', [])
                 
-                if summary_response.status_code == 200:
-                    summary_data = summary_response.json()
+                # Check if any task is assigned to us
+                for task in all_tasks:
+                    status = task.get('status', '').lower()
+                    assigned_to = task.get('assignedTo', '')
                     
-                    # Check various fields that might indicate assigned tasks
-                    assigned_count = (
-                        summary_data.get('assignedTasks') or 
-                        summary_data.get('assigned') or 
-                        summary_data.get('inProgress') or 
-                        summary_data.get('active') or
-                        0
-                    )
-                    
-                    if assigned_count > 0:
-                        return True
-                        
-                    # Also check if there's a tasks array with assigned tasks
-                    if 'tasks' in summary_data and summary_data['tasks']:
+                    if status == 'assigned' and assigned_to == self.user_id:
                         return True
                     
             return False
@@ -921,157 +931,186 @@ class TaskFluxBot:
     def check_for_running_task(self):
         """Check if there's a running/assigned task on the server"""
         try:
-            # Try multiple possible endpoints
-            possible_endpoints = [
-                "/api/tasks/task-summary",  # Primary endpoint - shows task statistics
-            ]
+            # Use task-pool endpoint to get actual task details
+            # task-summary only has statistics (completed count, payout numbers)
+            tasks_url = f"{self.base_url}/api/tasks/task-pool"
+            response = self.session.get(tasks_url)
             
-            tasks = []
-            endpoint_used = None
+            if response.status_code != 200:
+                return False
             
-            for endpoint in possible_endpoints:
+            data = response.json()
+            all_tasks = data if isinstance(data, list) else data.get('tasks', [])
+            
+            # Filter for tasks assigned to us
+            assigned_tasks = []
+            for task in all_tasks:
+                status = task.get('status', '').lower()
+                assigned_to = task.get('assignedTo', '')
+                
+                # Check if this task is assigned to us
+                if status == 'assigned' and assigned_to == self.user_id:
+                    assigned_tasks.append(task)
+            
+            if not assigned_tasks:
+                return False
+            
+            # Found assigned task(s)
+            print(f"⚠️ Found {len(assigned_tasks)} assigned task(s) on server!")
+            
+            # Get the first assigned task
+            task = assigned_tasks[0]
+            task_id = task.get('_id') or task.get('id') or task.get('taskId', 'unknown')
+            task_type = task.get('type', 'N/A')
+            task_price = task.get('microWorkerPrice') or task.get('price', 'N/A')
+            assigned_at = task.get('assignedAt') or task.get('createdAt')
+            assignment_deadline = task.get('assignmentDeadline')
+            
+            # Calculate deadline
+            ist = pytz.timezone('Asia/Kolkata')
+            if assigned_at:
                 try:
-                    tasks_url = f"{self.base_url}{endpoint}"
-                    response = self.session.get(tasks_url)
+                    # Parse ISO format
+                    claimed_time = datetime.fromisoformat(assigned_at.replace('Z', '+00:00'))
                     
-                    if response.status_code == 200:
-                        data = response.json()
-                        
-                        # Handle different response formats
-                        # task-summary might return different format
-                        if endpoint == "/api/tasks/task-summary":
-                            # Check for summary data indicating active tasks
-                            active_count = data.get('activeTasks') or data.get('assignedTasks') or data.get('inProgress')
-                            if active_count and active_count > 0:
-                                # Has active tasks - try to get task list from a different endpoint
-                                tasks = data.get('tasks', [])
-                            else:
-                                tasks = []
-                        else:
-                            tasks = data if isinstance(data, list) else data.get('tasks', [])
-                        
-                        if tasks:
-                            endpoint_used = endpoint
-                            break
-                        else:
-                            # Endpoint works but no tasks - this is valid
-                            endpoint_used = endpoint
-                            break
-                    elif response.status_code == 404:
-                        # Endpoint doesn't exist, try next one
-                        continue
-                    elif response.status_code == 500:
-                        # Server error on this endpoint, try next one
-                        print(f"⚠️ Server error on {endpoint}, trying next...")
-                        continue
+                    # Convert to IST
+                    if claimed_time.tzinfo:
+                        claimed_time_ist = claimed_time.astimezone(ist)
+                        claimed_time = claimed_time_ist.replace(tzinfo=None)
                     else:
-                        # Other error, try next endpoint
-                        continue
+                        utc = pytz.UTC
+                        claimed_time = utc.localize(claimed_time).astimezone(ist).replace(tzinfo=None)
+                    
+                    # Use assignmentDeadline if available, otherwise calculate 6 hours
+                    if assignment_deadline:
+                        deadline_time = datetime.fromisoformat(assignment_deadline.replace('Z', '+00:00'))
+                        if deadline_time.tzinfo:
+                            deadline_time = deadline_time.astimezone(ist).replace(tzinfo=None)
+                    else:
+                        deadline_time = claimed_time + timedelta(hours=6)
+                    
+                    # Store deadline tracking
+                    self.task_claimed_at = claimed_time
+                    self.task_deadline = deadline_time
+                    self.deadline_warning_sent = False
+                    self.deadline_final_warning_sent = False
+                    
+                    # Store current task ID and type for status tracking
+                    self.current_task_id = task_id
+                    self.current_task_type = task_type
+                    
+                    # Calculate time remaining
+                    time_remaining = deadline_time - datetime.now()
+                    hours_remaining = time_remaining.total_seconds() / 3600
+                    
+                    print(f"\n{'═'*60}")
+                    print(f"⚠️ ASSIGNED TASK DETECTED")
+                    print(f"{'═'*60}")
+                    print(f"📋 Type: {task_type}")
+                    print(f"💰 Price: ${task_price}")
+                    print(f"🆔 Task ID: {task_id}")
+                    print(f"⏰ Assigned at: {claimed_time.strftime('%I:%M:%S %p IST')}")
+                    print(f"⏰ DEADLINE: {deadline_time.strftime('%I:%M %p IST')}")
+                    print(f"⏳ Time remaining: {hours_remaining:.1f}h")
+                    print(f"{'═'*60}\n")
+                    
+                    # Send notification
+                    if hours_remaining > 0:
+                        self.send_notification(
+                            "⚠️ Assigned Task Found",
+                            f"🎯 {task_type}\n"
+                            f"💰 Price: ${task_price}\n\n"
+                            f"⏰ DEADLINE: {deadline_time.strftime('%I:%M %p IST')}\n"
+                            f"⏳ Remaining: {hours_remaining:.1f}h\n\n"
+                            f"⚠️ Complete before deadline!",
+                            priority="urgent",
+                            tags="warning,alarm_clock"
+                        )
+                    else:
+                        # Deadline already passed
+                        self.send_notification(
+                            "⚠️ Task Deadline Passed",
+                            f"❌ Assigned task found but deadline passed!\n"
+                            f"🎯 {task_type}\n"
+                            f"💰 Price: ${task_price}\n\n"
+                            f"Deadline was: {deadline_time.strftime('%I:%M %p IST')}\n"
+                            f"⚠️ Cooldown may start soon",
+                            priority="urgent",
+                            tags="x,warning"
+                        )
                         
                 except Exception as e:
-                    # Error on this endpoint, try next one
-                    continue
-            
-            # If we couldn't find a working endpoint, just return False silently
-            if endpoint_used is None:
-                return False
-            
-            if tasks:
-                print(f"⚠️ Found {len(tasks)} running task(s) on server!")
-                
-                # Get the first active task
-                task = tasks[0]
-                task_id = task.get('id') or task.get('_id') or task.get('taskId', 'unknown')
-                task_type = task.get('type', 'N/A')
-                task_price = task.get('price', 'N/A')
-                created_at = task.get('createdAt') or task.get('claimedAt') or task.get('assignedAt')
-                
-                # Calculate deadline if we have creation time
-                ist = pytz.timezone('Asia/Kolkata')
-                if created_at:
-                    try:
-                        # Parse ISO format
-                        claimed_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        
-                        # Convert to IST
-                        if claimed_time.tzinfo:
-                            claimed_time_ist = claimed_time.astimezone(ist)
-                            claimed_time = claimed_time_ist.replace(tzinfo=None)
-                        else:
-                            utc = pytz.UTC
-                            claimed_time = utc.localize(claimed_time).astimezone(ist).replace(tzinfo=None)
-                        
-                        # Set 6-hour deadline
-                        deadline_time = claimed_time + timedelta(hours=6)
-                        
-                        # Store deadline tracking
-                        self.task_claimed_at = claimed_time
-                        self.task_deadline = deadline_time
-                        self.deadline_warning_sent = False
-                        self.deadline_final_warning_sent = False
-                        
-                        # Calculate time remaining
-                        time_remaining = deadline_time - datetime.now()
-                        hours_remaining = time_remaining.total_seconds() / 3600
-                        
-                        print(f"\n{'═'*60}")
-                        print(f"⚠️ RUNNING TASK DETECTED")
-                        print(f"{'═'*60}")
-                        print(f"📋 Type: {task_type}")
-                        print(f"💰 Price: ${task_price}")
-                        print(f"🆔 Task ID: {task_id}")
-                        print(f"⏰ Claimed at: {claimed_time.strftime('%I:%M:%S %p IST')}")
-                        print(f"⏰ DEADLINE: {deadline_time.strftime('%I:%M %p IST')}")
-                        print(f"⏳ Time remaining: {hours_remaining:.1f}h")
-                        print(f"{'═'*60}\n")
-                        
-                        # Send notification
-                        if hours_remaining > 0:
-                            self.send_notification(
-                                "⚠️ Running Task Found",
-                                f"🎯 {task_type}\n"
-                                f"💰 Price: ${task_price}\n\n"
-                                f"⏰ DEADLINE: {deadline_time.strftime('%I:%M %p IST')}\n"
-                                f"⏳ Remaining: {hours_remaining:.1f}h\n\n"
-                                f"⚠️ Complete before deadline!",
-                                priority="urgent",
-                                tags="warning,alarm_clock"
-                            )
-                        else:
-                            # Deadline already passed
-                            self.send_notification(
-                                "⚠️ Task Deadline Passed",
-                                f"❌ Running task found but deadline passed!\n"
-                                f"🎯 {task_type}\n"
-                                f"💰 Price: ${task_price}\n\n"
-                                f"Deadline was: {deadline_time.strftime('%I:%M %p IST')}\n"
-                                f"⚠️ Cooldown may start soon",
-                                priority="urgent",
-                                tags="x,warning"
-                            )
-                            
-                    except Exception as e:
-                        print(f"⚠️ Could not parse task creation time: {e}")
-                        print(f"   Raw time value: {created_at}")
-                else:
-                    # No timestamp available, just notify about the task
-                    print(f"⚠️ Running task found (ID: {task_id}) but no timestamp available")
-                    self.send_notification(
-                        "⚠️ Running Task Found",
-                        f"🎯 {task_type}\n"
-                        f"💰 Price: ${task_price}\n"
-                        f"🆔 ID: {task_id}\n\n"
-                        f"⚠️ Complete this task!",
-                        priority="high",
-                        tags="warning,alarm_clock"
-                    )
-                
-                return True
+                    print(f"⚠️ Could not parse task assignment time: {e}")
+                    print(f"   Raw time value: {assigned_at}")
             else:
-                return False
+                # No timestamp available, just notify about the task
+                print(f"⚠️ Assigned task found (ID: {task_id}) but no timestamp available")
+                
+                # Store task ID and type for status tracking
+                self.current_task_id = task_id
+                self.current_task_type = task_type
+                
+                self.send_notification(
+                    "⚠️ Assigned Task Found",
+                    f"🎯 {task_type}\n"
+                    f"💰 Price: ${task_price}\n"
+                    f"🆔 ID: {task_id}\n\n"
+                    f"⚠️ Complete this task!",
+                    priority="high",
+                    tags="warning,alarm_clock"
+                )
+            
+            return True
                 
         except Exception as e:
+            print(f"⚠️ Error checking for assigned task: {e}")
             return False
+    
+    def check_task_status_by_id(self, task_id, task_type):
+        """
+        Check if a specific task has been completed by checking its status
+        Uses the task tracking API to check if status changed to 'published'
+        Returns: (is_completed: bool, task_details: dict or None)
+        """
+        try:
+            # Determine which API endpoint to use based on task type
+            if 'comment' in task_type.lower():
+                api_url = f"{self.base_url}/api/tasks/?filters%5Btype%5D=RedditCommentTask&filters%5Bstatus%5D=all&pageNum=1"
+            elif 'reply' in task_type.lower():
+                api_url = f"{self.base_url}/api/tasks/?filters%5Btype%5D=RedditReplyTask&filters%5Bstatus%5D=all&pageNum=1"
+            else:
+                print(f"⚠️ Unknown task type: {task_type}")
+                return False, None
+            
+            response = self.session.get(api_url)
+            
+            if response.status_code != 200:
+                print(f"⚠️ Failed to fetch task status: {response.status_code}")
+                return False, None
+            
+            data = response.json()
+            tasks = data.get('tasks', [])
+            
+            # Find our task by ID
+            for task in tasks:
+                if task.get('_id') == task_id:
+                    status = task.get('status', '').lower()
+                    
+                    if status == 'published':
+                        # Task completed!
+                        print(f"✅ Task {task_id} status: PUBLISHED (completed)")
+                        return True, task
+                    else:
+                        print(f"⏳ Task {task_id} status: {status.upper()}")
+                        return False, task
+            
+            # Task not found in the list
+            print(f"⚠️ Task {task_id} not found in tracking API")
+            return False, None
+                
+        except Exception as e:
+            print(f"⚠️ Error checking task status: {e}")
+            return False, None
     
     def is_within_claiming_hours(self):
         """Check if current time is within allowed claiming hours (8 AM - 11 PM IST)"""
@@ -1165,6 +1204,8 @@ class TaskFluxBot:
                 # Deadline passed, clear tracking
                 self.task_claimed_at = None
                 self.task_deadline = None
+                self.current_task_id = None
+                self.current_task_type = None
         
         # Sync cooldown status from server first
         self.sync_cooldown_from_server()
@@ -1226,9 +1267,9 @@ class TaskFluxBot:
             )
         
         for idx, task in enumerate(tasks, 1):
-            task_id = task.get('id') or task.get('task_id', 'unknown')
+            task_id = task.get('_id') or task.get('id') or task.get('taskId', 'unknown')
             task_type = task.get('type', 'N/A')
-            task_price = task.get('price', '2.00')
+            task_price = task.get('microWorkerPrice') or task.get('price', '2.00')
             task_name = task.get('name', '')
             task_title = task.get('title', '')
             subreddit = task.get('subreddit') or task.get('subredditName', '')
@@ -1280,7 +1321,7 @@ class TaskFluxBot:
             task_type = task.get('type', '').lower()
             task_name = task.get('name', '').lower()
             task_title = task.get('title', '').lower()
-            task_id = task.get('id') or task.get('task_id', 'unknown')
+            task_id = task.get('_id') or task.get('id') or task.get('taskId', 'unknown')
             
             # Check if task type matches allowed types
             type_matches = any(allowed_type in task_type or allowed_type in task_name or allowed_type in task_title 
@@ -1336,9 +1377,9 @@ class TaskFluxBot:
                 reason = rejected['reason']
                 content = rejected['content']
                 
-                task_id = task.get('id') or task.get('task_id', 'unknown')
+                task_id = task.get('_id') or task.get('id') or task.get('taskId', 'unknown')
                 task_type = task.get('type', 'N/A')
-                task_price = task.get('price', '2.00')
+                task_price = task.get('microWorkerPrice') or task.get('price', '2.00')
                 task_name = task.get('name', '')
                 task_title = task.get('title', '')
                 subreddit = task.get('subreddit') or task.get('subredditName', '')
@@ -1396,9 +1437,9 @@ class TaskFluxBot:
             )
             
             for idx, task in enumerate(claimable_tasks, 1):
-                task_id = task.get('id') or task.get('task_id', 'unknown')
+                task_id = task.get('_id') or task.get('id') or task.get('taskId', 'unknown')
                 task_type = task.get('type', 'N/A')
-                task_price = task.get('price', '2.00')
+                task_price = task.get('microWorkerPrice') or task.get('price', '2.00')
                 task_name = task.get('name', '')
                 task_title = task.get('title', '')
                 subreddit = task.get('subreddit') or task.get('subredditName', '')
@@ -1453,7 +1494,7 @@ class TaskFluxBot:
         
         # Claim the first claimable task
         task = claimable_tasks[0]
-        task_id = task.get('id') or task.get('task_id')
+        task_id = task.get('_id') or task.get('id') or task.get('taskId')
         task_type = task.get('type', 'N/A')
         
         if task_id:
@@ -1487,101 +1528,7 @@ class TaskFluxBot:
             print("❌ Failed to login. Exiting...")
             return
         
-        print("\n" + "="*60)
-        print("🔍 CHECKING SERVER STATUS")
-        print("="*60)
-        
-        # 1. Sync cooldown status from server FIRST
-        self.sync_cooldown_from_server()
-        
-        # Determine cooldown status
-        has_cooldown = False
-        if self.cooldown_end and datetime.now() < self.cooldown_end:
-            remaining = self.cooldown_end - datetime.now()
-            hours = remaining.total_seconds() / 3600
-            has_cooldown = True
-            print(f"⏰ Cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
-        elif self.cooldown_end and datetime.now() >= self.cooldown_end:
-            self.cooldown_end = None
-            self.save_cooldown(None)
-            print(f"✅ No active cooldown - ready to claim!")
-        else:
-            print(f"✅ No active cooldown - ready to claim!")
-        
-        # 2. Check for running/assigned tasks on server (use reliable can-assign endpoint)
-        has_running_task = self.check_for_assigned_task_on_server()
-        
-        if has_running_task:
-            print(f"⚠️ Task assigned - complete it before claiming new tasks")
-        
-        # If assigned task detected, also get full task details from task-summary
-        if has_running_task:
-            self.check_for_running_task()  # This sets deadline and sends detailed notification
-        
-        print("="*60 + "\n")
-        
-        # 3. Send appropriate notifications based on status
-        # Priority: Task Assigned > Cooldown > Ready
-        if has_running_task:
-            # Send task assigned notification
-            if self.task_deadline:
-                time_remaining = self.task_deadline - datetime.now()
-                hours_remaining = time_remaining.total_seconds() / 3600
-                
-                if hours_remaining > 0:
-                    self.send_notification(
-                        "Task Assigned",
-                        f"⚠️ You have an assigned task!\n\n"
-                        f"⏰ Deadline: {self.task_deadline.strftime('%I:%M %p IST')}\n"
-                        f"⏳ {hours_remaining:.1f}h remaining\n\n"
-                        f"✅ Complete it to claim new tasks!",
-                        priority="urgent",
-                        tags="warning,alarm_clock"
-                    )
-                else:
-                    self.send_notification(
-                        "Task Deadline Exceeded",
-                        f"⚠️ Assigned task deadline passed!\n\n"
-                        f"Deadline was: {self.task_deadline.strftime('%I:%M %p IST')}\n"
-                        f"❌ Task may be lost or penalized\n\n"
-                        f"⏰ Cooldown may start soon",
-                        priority="urgent",
-                        tags="x,warning,rotating_light"
-                    )
-            else:
-                self.send_notification(
-                    "Task Assigned",
-                    f"⚠️ You have an assigned task!\n\n"
-                    f"✅ Complete it to claim new tasks!",
-                    priority="urgent",
-                    tags="warning,alarm_clock"
-                )
-        elif has_cooldown:
-            # Send cooldown notification
-            remaining = self.cooldown_end - datetime.now()
-            hours = remaining.total_seconds() / 3600
-            self.send_notification(
-                "Cooldown Active",
-                f"⏰ {hours:.1f}h remaining\n"
-                f"Until: {self.cooldown_end.strftime('%I:%M %p IST')}\n\n"
-                f"🎯 Bot monitoring for when cooldown ends",
-                priority="default",
-                tags="hourglass"
-            )
-        else:
-            # Ready to claim
-            ist = pytz.timezone('Asia/Kolkata')
-            current_ist = datetime.now(ist)
-            
-            self.send_notification(
-                "Bot Ready",
-                f"✅ Ready to claim tasks!\n"
-                f"Time: {current_ist.strftime('%I:%M %p IST')}\n\n"
-                f"🎯 Monitoring for available tasks...",
-                priority="high",
-                tags="white_check_mark,bell"
-            )
-        
+        # Start monitoring loop directly - initial check happens in first loop iteration
         loop_count = 0
         
         try:
@@ -1590,17 +1537,18 @@ class TaskFluxBot:
                     loop_count += 1
                     current_time = datetime.now().strftime('%I:%M:%S %p')
                     
-                    print(f"\n{'='*50}")
-                    print(f"🔄 Check #{loop_count} at {current_time}")
+                    print(f"\n{'='*60}")
+                    print(f"🔄 MONITORING CHECK #{loop_count} - {current_time}")
+                    print(f"{'='*60}")
                     
                     # Show statistics
                     if self.last_task_seen:
                         time_since = datetime.now() - self.last_task_seen
                         hours = time_since.total_seconds() / 3600
-                        print(f"📊 Last task seen: {hours:.1f}h ago | Tasks seen today: {self.tasks_seen_today}")
+                        print(f"📊 Stats: Last task {hours:.1f}h ago | Tasks today: {self.tasks_seen_today}")
                     
                     # FLOW: 1. Check for assigned task on server
-                    print(f"\n🔍 Step 1: Checking for assigned task on server...")
+                    print(f"\n📋 Step 1: Checking for assigned task...")
                     has_assigned_task = self.check_for_assigned_task_on_server()
                     
                     if has_assigned_task:
@@ -1610,8 +1558,13 @@ class TaskFluxBot:
                             hours_remaining = time_remaining.total_seconds() / 3600
                             
                             if hours_remaining > 0:
-                                print(f"⚠️ Task assigned - {hours_remaining:.1f}h remaining to complete")
-                                print(f"   Skipping cooldown check and task pool check")
+                                print(f"   ⚠️  Task assigned: {hours_remaining:.1f}h remaining to complete")
+                                print(f"   ⏭️  Skipping cooldown & task pool checks")
+                                print(f"{'='*60}")
+                                
+                                # Send notification on first check only with full task details
+                                if loop_count == 1:
+                                    self.check_for_running_task()  # Get full task details and send notification
                                 
                                 # Check task deadline and send warnings if needed
                                 self.check_task_deadline()
@@ -1624,33 +1577,127 @@ class TaskFluxBot:
                                 print(f"💤 Sleeping for {sleep_time}s (1 minute) to check task completion...")
                                 
                                 next_check = datetime.now() + timedelta(seconds=sleep_time)
-                                print(f"⏰ Next: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
+                                print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
                                 
                                 time.sleep(sleep_time)
                                 continue
                         else:
-                            print(f"⚠️ Task assigned on server - skipping cooldown check and task pool check")
+                            print(f"   ⚠️  Task assigned on server")
+                            print(f"{'='*60}")
                             
-                            # Sleep for 1 minute to check task completion frequently
-                            sleep_time = 60  # 1 minute
-                            print(f"💤 Sleeping for {sleep_time}s (1 minute) to check task completion...")
+                            # Send notification on first check only with full task details
+                            if loop_count == 1:
+                                self.check_for_running_task()  # Get full task details and send notification
+                            
+                            # Check task status every 2 minutes to detect completion
+                            if self.current_task_id and self.current_task_type:
+                                print(f"🔍 Checking task status (ID: {self.current_task_id})...")
+                                is_completed, task_details = self.check_task_status_by_id(
+                                    self.current_task_id, 
+                                    self.current_task_type
+                                )
+                                
+                                if is_completed and task_details:
+                                    # Task status changed to "published" - task completed!
+                                    print(f"✅ Task {self.current_task_id} completed! Status: PUBLISHED")
+                                    
+                                    # Extract task details for notification
+                                    task_type = task_details.get('taskType', self.current_task_type)
+                                    task_price = task_details.get('microWorkerPrice') or task_details.get('randomCommentsPrice', 'N/A')
+                                    subreddit = task_details.get('subreddit', '')
+                                    project_name = ''
+                                    if task_details.get('project'):
+                                        project_name = task_details['project'].get('name', '')
+                                    
+                                    # Fetch task summary to get total amount
+                                    task_summary = self.get_task_summary()
+                                    total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
+                                    
+                                    # Send task completion notification FIRST with details
+                                    completion_msg = f"✅ Task completed! Well done!\n\n"
+                                    completion_msg += f"🎯 Type: {task_type.upper()}\n"
+                                    completion_msg += f"💰 Task Price: ${task_price}\n"
+                                    
+                                    if subreddit:
+                                        completion_msg += f"📍 Subreddit: r/{subreddit}\n"
+                                    
+                                    if project_name:
+                                        completion_msg += f"📂 Project: {project_name}\n"
+                                    
+                                    completion_msg += f"\n💰 Total Earned: ${total_amount}\n"
+                                    
+                                    self.send_notification(
+                                        "Task Completed",
+                                        completion_msg,
+                                        priority="high",
+                                        tags="party_popper,white_check_mark,money_bag"
+                                    )
+                                    
+                                    print(f"🎉 Task completion confirmed!")
+                                    print(f"💰 Task Price: ${task_price}")
+                                    print(f"💰 Total Amount Earned: ${total_amount}")
+                                    
+                                    # Wait 2 seconds before checking cooldown
+                                    time.sleep(2)
+                                    
+                                    # Now check for cooldown
+                                    print(f"🔍 Checking for cooldown after task completion...")
+                                    self.sync_cooldown_from_server()
+                                    
+                                    if self.is_in_cooldown():
+                                        remaining = self.get_cooldown_remaining()
+                                        hours = remaining.total_seconds() / 3600 if remaining else 0
+                                        
+                                        # Send cooldown notification SECOND
+                                        cooldown_msg = f"⏰ Cooldown: {hours:.1f}h\n"
+                                        cooldown_msg += f"Until: {self.cooldown_end.strftime('%I:%M %p IST')}\n"
+                                        cooldown_msg += f"Date: {self.cooldown_end.strftime('%m/%d/%y')}\n"
+                                        cooldown_msg += f"\n⏰ Next task available after cooldown"
+                                        
+                                        self.send_notification(
+                                            "Cooldown Started",
+                                            cooldown_msg,
+                                            priority="default",
+                                            tags="alarm_clock,hourglass"
+                                        )
+                                        
+                                        print(f"⏰ Cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
+                                    
+                                    # Clear task tracking
+                                    self.task_claimed_at = None
+                                    self.task_deadline = None
+                                    self.deadline_warning_sent = False
+                                    self.deadline_final_warning_sent = False
+                                    self.current_task_id = None
+                                    self.current_task_type = None
+                                    
+                                    # Continue to next iteration (will enter cooldown monitoring)
+                                    continue
+                                else:
+                                    print(f"⏳ Task still in progress (not published yet)")
+                            else:
+                                print(f"⚠️ No task ID stored - cannot check status")
+                            
+                            # Task still assigned, not completed yet - check again in 2 minutes
+                            sleep_time = 120  # 2 minutes
+                            print(f"💤 Sleeping for {sleep_time}s (2 minutes) to check task status again...")
                             
                             next_check = datetime.now() + timedelta(seconds=sleep_time)
-                            print(f"⏰ Next: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
+                            print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
                             
                             time.sleep(sleep_time)
                             continue
                     
                     # FLOW: 2. Check for cooldown on server
-                    print(f"✅ No task assigned")
-                    print(f"\n🔍 Step 2: Checking cooldown status on server...")
+                    print(f"   ✅ No task assigned")
+                    print(f"\n⏰ Step 2: Checking cooldown status...")
                     
                     # Sync cooldown from server
                     server_cooldown = self.sync_cooldown_from_server()
                     
                     if server_cooldown:
                         # Server has cooldown - update local state
-                        print(f"⏳ Server cooldown detected - syncing local state")
+                        print(f"   ⏳ Server cooldown detected - syncing local state")
                         self.is_in_cooldown()  # This will update from synced cooldown_end
                     
                     # Check local cooldown (now synced with server)
@@ -1658,8 +1705,50 @@ class TaskFluxBot:
                         remaining = self.get_cooldown_remaining()
                         hours = remaining.total_seconds() / 3600
                         minutes = remaining.total_seconds() / 60
-                        print(f"⏳ Cooldown active. {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
-                        print(f"   Skipping task pool check")
+                        print(f"   ⏳ Cooldown active: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
+                        print(f"   ⏭️  Skipping task pool check")
+                        print(f"{'='*60}")
+                        
+                        # Send notification on first check only
+                        if loop_count == 1:
+                            # Check if cooldown just started (less than 30 minutes elapsed)
+                            # This indicates a task was recently completed
+                            cooldown_duration = timedelta(hours=24) - remaining
+                            cooldown_elapsed_minutes = cooldown_duration.total_seconds() / 60
+                            
+                            if cooldown_elapsed_minutes < 30:
+                                # Task was recently completed! Send completion notification first
+                                print(f"🎉 Recent task completion detected ({cooldown_elapsed_minutes:.1f} minutes ago)")
+                                
+                                # Fetch task summary to get total amount
+                                task_summary = self.get_task_summary()
+                                total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
+                                
+                                # Send task completion notification
+                                completion_msg = f"⚡Well done!\n\n"
+                                completion_msg += f"💰 Total Amount: ${total_amount}\n"
+                                
+                                self.send_notification(
+                                    "Task Completed",
+                                    completion_msg,
+                                    priority="high",
+                                    tags="party_popper,white_check_mark,money_bag"
+                                )
+                                
+                                print(f"💰 Total Amount Earned: ${total_amount}")
+                                
+                                # Small delay before cooldown notification
+                                time.sleep(2)
+                            
+                            # Now send cooldown notification
+                            self.send_notification(
+                                "Cooldown Active",
+                                f"⏰ {hours:.1f}h remaining\n"
+                                f"Until: {self.cooldown_end.strftime('%I:%M %p IST')}\n\n"
+                                f"🎯 Bot monitoring for when cooldown ends",
+                                priority="default",
+                                tags="hourglass"
+                            )
                         
                         # Sleep until cooldown ends (with 5 second buffer)
                         sleep_time = max(60, int(remaining.total_seconds()) + 5)
@@ -1674,17 +1763,31 @@ class TaskFluxBot:
                                 tags="alarm_clock"
                             )
                         
-                        print(f"💤 Sleeping {sleep_time/60:.1f}min until cooldown ends...")
+                        print(f"💤 Sleeping for {sleep_time/60:.1f} minutes until cooldown ends...")
                         
                         next_check = datetime.now() + timedelta(seconds=sleep_time)
-                        print(f"⏰ Next: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
+                        print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
                         
                         time.sleep(sleep_time)
                         continue
                     
                     # FLOW: 3. No task assigned and no cooldown - check for available tasks
-                    print(f"✅ No cooldown active")
-                    print(f"\n🔍 Step 3: Checking for available tasks...")
+                    print(f"   ✅ No cooldown active")
+                    print(f"\n🎯 Step 3: Checking for available tasks...")
+                    print(f"{'='*60}")
+                    
+                    # Send notification on first check only - ready to claim
+                    if loop_count == 1:
+                        ist = pytz.timezone('Asia/Kolkata')
+                        current_ist = datetime.now(ist)
+                        self.send_notification(
+                            "Bot Ready",
+                            f"✅ Ready to claim tasks!\n"
+                            f"Time: {current_ist.strftime('%I:%M %p IST')}\n\n"
+                            f"🎯 Monitoring for available tasks...",
+                            priority="high",
+                            tags="white_check_mark,bell"
+                        )
                     
                     # Send notification that cooldown has ended (only once) - HIGH priority
                     if hasattr(self, '_cooldown_ending_notified'):
@@ -1710,13 +1813,13 @@ class TaskFluxBot:
                         print(f"⚡ Ready to claim - using minimum interval: {sleep_time}s")
                     
                     if claimed:
-                        print(f"🎉 Task claimed! Will check again in {sleep_time}s ({sleep_time/60:.1f}min)")
+                        print(f"🎉 Task claimed! Will check again in {sleep_time}s ({sleep_time/60:.1f} minutes)")
                     else:
-                        print(f"💤 Sleeping for {sleep_time}s ({sleep_time/60:.1f}min)...")
+                        print(f"💤 Sleeping for {sleep_time}s ({sleep_time/60:.1f} minutes)...")
                     
                     # Show next check time
                     next_check = datetime.now() + timedelta(seconds=sleep_time)
-                    print(f"⏰ Next check at: {next_check.strftime('%I:%M:%S %p')}")
+                    print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M:%S %p')}")
                     
                     time.sleep(sleep_time)
                     

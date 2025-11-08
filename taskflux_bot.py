@@ -21,20 +21,12 @@ class TaskFluxBot:
         self.cooldown_end = None
         self.cooldown_file = "cooldown.json"
         
-        # Adaptive checking intervals (in seconds)
-        # Set CONTINUOUS_MODE=true in .env for rapid checking (every 30-60 seconds)
+        # Checking interval (in seconds)
         # IMPORTANT: Tasks are PUBLIC and disappear FAST (seconds/minutes)
         # Faster checking = better chance to claim before others
-        continuous_mode = os.getenv("CONTINUOUS_MODE", "false").lower() == "true"
-        
-        if continuous_mode:
-            self.min_check_interval = 30   # 30 seconds (rapid mode when tasks found)
-            self.max_check_interval = 120  # 2 minutes (rapid mode when no tasks)
-            self.current_check_interval = 60  # Start with 1 minute
-        else:
-            self.min_check_interval = 180  # 3 minutes (when tasks were recently found)
-            self.max_check_interval = 600  # 10 minutes (when no tasks for a while)
-            self.current_check_interval = 300  # Start with 5 minutes
+        self.min_check_interval = 3    # 3 seconds
+        self.max_check_interval = 3    # 3 seconds (fixed interval)
+        self.current_check_interval = 3  # Start with 3 seconds
         
         # Task availability tracking
         self.consecutive_empty_checks = 0
@@ -228,11 +220,7 @@ class TaskFluxBot:
                 
                 print(f"✅ Login successful!")
                 
-                # Get current mode and IST time
-                continuous_mode = os.getenv("CONTINUOUS_MODE", "false").lower() == "true"
-                mode_name = "CONTINUOUS" if continuous_mode else "ADAPTIVE"
-                check_range = "30-120s" if continuous_mode else "3-10min"
-                
+                # Get IST time
                 ist = pytz.timezone('Asia/Kolkata')
                 current_ist = datetime.now(ist)
                 
@@ -1230,13 +1218,9 @@ class TaskFluxBot:
             
             # Adaptive interval: slow down checks when no tasks are available
             if self.consecutive_empty_checks >= 3:
-                # In continuous mode, slower increase
-                continuous_mode = os.getenv("CONTINUOUS_MODE", "false").lower() == "true"
-                increment = 15 if continuous_mode else 30
-                
-                self.current_check_interval = min(self.max_check_interval, 
-                                                  self.min_check_interval + (self.consecutive_empty_checks * increment))
-                print(f"⏱️ Adjusting check interval to {self.current_check_interval}s ({self.current_check_interval/60:.1f}min)")
+                # Keep interval at 3 seconds (no adaptation)
+                self.current_check_interval = 3
+                print(f"⏱️ Check interval: {self.current_check_interval}s")
             
             return False
         
@@ -1503,25 +1487,16 @@ class TaskFluxBot:
         else:
             return False
     
-    def run(self, check_interval=300):
+    def run(self, check_interval=3):
         """
-        Main bot loop - now with adaptive checking
-        check_interval: initial seconds between checks (default 5 minutes)
-        Note: The bot will automatically adjust this based on task availability
-        
-        Enable CONTINUOUS_MODE in .env for rapid checking (30-120 seconds)
+        Main bot loop - fixed 3 second checking interval
+        check_interval: seconds between checks (default 3 seconds)
         """
-        continuous_mode = os.getenv("CONTINUOUS_MODE", "false").lower() == "true"
+        # Set intervals to 3 seconds
+        self.min_check_interval = 3
+        self.max_check_interval = 3
         
-        # Set intervals based on mode
-        if continuous_mode:
-            self.min_check_interval = 30
-            self.max_check_interval = 120
-        else:
-            self.min_check_interval = 180
-            self.max_check_interval = 600
-        
-        self.current_check_interval = self.min_check_interval if continuous_mode else check_interval
+        self.current_check_interval = 3
         
         # Initial login
         if not self.login():
@@ -1835,11 +1810,9 @@ class TaskFluxBot:
             print(f"📊 Final stats - Tasks seen today: {self.tasks_seen_today}")
             print(f"📊 Total checks performed: {loop_count}")
             
-            # Get IST time and mode
+            # Get IST time
             ist = pytz.timezone('Asia/Kolkata')
             current_ist = datetime.now(ist)
-            continuous_mode = os.getenv("CONTINUOUS_MODE", "false").lower() == "true"
-            mode_name = "CONTINUOUS" if continuous_mode else "ADAPTIVE"
             
             # Calculate cooldown status
             cooldown_status = "None"
@@ -1863,8 +1836,5 @@ class TaskFluxBot:
 
 if __name__ == "__main__":
     bot = TaskFluxBot()
-    # Initial check interval: 5 minutes (300 seconds)
-    # Bot will automatically adapt between 3-10 minutes based on task availability
-    # - Speeds up to 3 min when tasks are found
-    # - Slows down to 10 min when no tasks available for extended periods
-    bot.run(check_interval=300)
+    # Fixed check interval: 3 seconds
+    bot.run(check_interval=3)

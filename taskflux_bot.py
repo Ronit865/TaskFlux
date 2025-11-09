@@ -226,9 +226,9 @@ class TaskFluxBot:
                 
                 self.send_notification(
                     "Bot Started",
-                    f"🟢 {self.email}",
+                    f"🤖 {self.email}",
                     priority="default",
-                    tags="green_circle"
+                    tags="robot"
                 )
                 return True
             else:
@@ -286,7 +286,7 @@ class TaskFluxBot:
                         if is_new_cooldown:
                             self.send_notification(
                                 "Cooldown Active",
-                                f"⏰ {hours:.1f}h left\n⏰ {cooldown_end.strftime('%I:%M %p IST')}",
+                                f"⌛ {hours:.1f}h left\n⏰ {cooldown_end.strftime('%I:%M %p IST')}",
                                 priority="default",
                                 tags="hourglass"
                             )
@@ -535,7 +535,7 @@ class TaskFluxBot:
                     "Task Assigned",
                     task_info,
                     priority="urgent",
-                    tags="bell"
+                    tags="dart"
                 )
                 return True
             elif response.status_code == 400:
@@ -591,16 +591,17 @@ class TaskFluxBot:
                 
                 self.send_notification(
                     "Task Submitted",
-                    f"✅ ${total_amount}",
-                    tags="white_check_mark"
+                    f"💰 ${total_amount}",
+                    priority="high",
+                    tags="moneybag"
                 )
                 
                 # Send cooldown notification
                 self.send_notification(
                     "Cooldown Started",
-                    f"⏱️ 24h\n🕐 {cooldown_end_ist.strftime('%I:%M %p IST')}",
+                    f"⌛ 24h\n🕐 {cooldown_end_ist.strftime('%I:%M %p IST')}",
                     priority="default",
-                    tags="timer_clock"
+                    tags="hourglass"
                 )
                 return True
             else:
@@ -663,9 +664,9 @@ class TaskFluxBot:
                 # Send submission notification
                 self.send_notification(
                     "Task Submitted",
-                    f"✅ ${total_amount}",
+                    f"💰 ${total_amount}",
                     priority="high",
-                    tags="white_check_mark"
+                    tags="moneybag"
                 )
                 
                 print(f"🎉 Task submission confirmed!")
@@ -677,9 +678,9 @@ class TaskFluxBot:
                 
                 self.send_notification(
                     "Cooldown Started",
-                    f"⏱️ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                    f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
                     priority="default",
-                    tags="timer_clock"
+                    tags="hourglass"
                 )
                 
                 print(f"⏰ Cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
@@ -729,9 +730,9 @@ class TaskFluxBot:
             # Send warning notification about missed deadline
             self.send_notification(
                 "Deadline Exceeded",
-                f"❌ {task_deadline.strftime('%I:%M %p IST')}",
+                f"⛔ {task_deadline.strftime('%I:%M %p IST')}",
                 priority="urgent",
-                tags="x"
+                tags="no_entry"
             )
             
             # If server didn't start cooldown, start it locally (24 hours)
@@ -747,9 +748,9 @@ class TaskFluxBot:
                 # Send cooldown notification
                 self.send_notification(
                     "Cooldown Started",
-                    f"⏱️ 24h (Missed)\n🕐 {cooldown_end_ist.strftime('%I:%M %p IST')}",
+                    f"⌛ 24h (Missed)\n🕐 {cooldown_end_ist.strftime('%I:%M %p IST')}",
                     priority="high",
-                    tags="timer_clock"
+                    tags="hourglass"
                 )
             else:
                 # Server already started cooldown
@@ -771,9 +772,9 @@ class TaskFluxBot:
             print(f"⚠️ Task deadline approaching: {hours_remaining:.1f}h remaining")
             self.send_notification(
                 "2 Hours Left",
-                f"⏰ {hours_remaining:.1f}h\n🕐 {task_deadline.strftime('%I:%M %p IST')}",
+                f"⚠️ {hours_remaining:.1f}h\n🕐 {task_deadline.strftime('%I:%M %p IST')}",
                 priority="high",
-                tags="alarm_clock"
+                tags="warning"
             )
             self.deadline_warning_sent = True
         
@@ -785,7 +786,7 @@ class TaskFluxBot:
                 "30 Minutes Left",
                 f"🚨 {minutes_remaining:.0f}min\n🕐 {task_deadline.strftime('%I:%M %p IST')}",
                 priority="urgent",
-                tags="rotating_light"
+                tags="fire"
             )
             self.deadline_final_warning_sent = True
     
@@ -933,15 +934,15 @@ class TaskFluxBot:
                                 "Assigned Task Found",
                                 f"📋 {task_type}\n💰 ${task_price}\n🕐 {deadline_time.strftime('%I:%M %p IST')}\n⏳ {hours_remaining:.1f}h left",
                                 priority="urgent",
-                                tags="bell"
+                                tags="pushpin"
                             )
                         else:
                             # Deadline already passed
                             self.send_notification(
                                 "Task Deadline Passed",
-                                f"❌ {task_type}\n💰 ${task_price}\n🕐 {deadline_time.strftime('%I:%M %p IST')}",
+                                f"⛔ {task_type}\n💰 ${task_price}\n🕐 {deadline_time.strftime('%I:%M %p IST')}",
                                 priority="urgent",
-                                tags="x"
+                                tags="no_entry"
                             )
                         
                 except Exception as e:
@@ -961,7 +962,7 @@ class TaskFluxBot:
                         "Assigned Task Found",
                         f"🎯 {task_type}\n💰 ${task_price}\n🆔 {task_id}",
                         priority="high",
-                        tags="warning,alarm_clock"
+                        tags="pushpin"
                     )
             
             return True
@@ -1159,7 +1160,7 @@ class TaskFluxBot:
                 "No Claimable Tasks",
                 f"🔍 {len(tasks)} found\n🚫 All rejected\n⏱️ Retry in 3s",
                 priority="low",
-                tags="no_entry_sign"
+                tags="mag"
             )
             return False
         

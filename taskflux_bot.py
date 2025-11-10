@@ -42,34 +42,43 @@ class TaskFluxBot:
         self.current_task_type = None  # Track current task type (RedditCommentTask or RedditReplyTask)
         
         # Suspicious words/patterns that might trigger AutoMod or get removed
+        # Based on common Reddit AutoMod rules and spam patterns
         self.suspicious_patterns = [
-            # Spam-like patterns
+            # Common spam/money-making schemes (high risk)
             'click here', 'free money', 'make money fast', 'get rich', 'earn money',
             'work from home', 'passive income', 'easy money', 'quick cash',
             
-            # Promotional/commercial
+            # Promotional/commercial spam (high risk)
             'buy now', 'limited time', 'act now', 'don\'t miss', 'special offer',
-            'discount code', 'promo code', 'affiliate', 'referral link',
+            'discount code', 'promo code', 'coupon code', 'affiliate', 'referral link',
             
-            # Suspicious links
-            'bit.ly', 'tinyurl', 'shortened link', 'goo.gl',
+            # Link shorteners (commonly blocked by AutoMod)
+            'bit.ly', 'tinyurl', 'goo.gl', 'shortened link', 't.co/',
             
-            # Common spam triggers
-            'dm me', 'pm me for', 'message me', 'whatsapp', 'telegram',
-            'crypto', 'bitcoin', 'forex', 'trading signals', 'investment opportunity',
+            # Direct solicitation (medium-high risk)
+            'dm me', 'pm me for', 'message me', 'text me', 'whatsapp', 'telegram',
+            'contact me at', 'email me',
             
-            # Self-promotion flags
-            'check out my', 'subscribe to my', 'follow me', 'my channel',
-            'my youtube', 'my instagram', 'my tiktok', 'my website',
+            # Crypto/financial spam (commonly filtered)
+            'crypto', 'bitcoin', 'btc', 'ethereum', 'nft', 'forex', 
+            'trading signals', 'investment opportunity', 'pump and dump',
             
-            # Low-effort content
+            # Self-promotion (medium risk)
+            'check out my', 'subscribe to my', 'follow me on', 'my channel',
+            'my youtube', 'my instagram', 'my tiktok', 'my website', 'my blog',
+            'visit my', 'join my',
+            
+            # Vote manipulation (high risk - Reddit rules violation)
             'upvote if', 'upvote this', 'give me karma', 'need karma',
+            'vote manipulation', 'brigade', 'mass upvote',
             
-            # Potentially offensive/controversial (add more as needed)
-            'retard', 'stupid ass', 'dumb fuck', 'kill yourself',
+            # Offensive/hateful content (high risk)
+            'retard', 'retarded', 'faggot', 'nigger', 'kys', 'kill yourself',
+            'kill urself', 'neck yourself', 'stupid ass', 'dumb fuck',
             
-            # Rule-breaking patterns
-            'vote manipulation', 'brigade', 'spam', 'bot account'
+            # Spam indicators (medium risk)
+            'check dm', 'check inbox', 'sent you a message', 'link in bio',
+            'link in profile', 'click profile', 'bot account'
         ]
         
         # Load saved cooldown info
@@ -670,7 +679,7 @@ class TaskFluxBot:
     
     def check_task_completion(self):
         """
-        Check if current task has been submitted by syncing cooldown with server.
+        Check if current task has been submitted by checking cooldown on server.
         Task submission is indicated by cooldown starting on the server.
         Returns True if task submitted, False otherwise.
         """
@@ -679,62 +688,73 @@ class TaskFluxBot:
             return False
             
         try:
-            print(f"🔍 Checking task submission status...")
+            print(f"🔍 Checking task submission status (cooldown detection)...")
             
-            # Sync with server - if task submitted, cooldown will start
-            self.sync_cooldown_from_server()
+            # Check server for cooldown WITHOUT syncing locally or sending notifications
+            check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
+            response = self.session.get(check_url)
             
-            # If cooldown started, task is submitted!
-            if self.is_in_cooldown():
-                print(f"✅ Task submitted! Cooldown detected from server.")
+            if response.status_code == 200:
+                data = response.json()
+                default_data = data.get('default', {})
+                can_claim = default_data.get('canAssign', True)
+                allowed_after = default_data.get('allowedAfter')
                 
-                # Get total earnings
-                task_summary = self.get_task_summary()
-                total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
-                
-                # Send submission notification first
-                self.send_notification(
-                    "Task Submitted",
-                    f"🎯 ${total_amount}",
-                    priority="high",
-                    tags="dart"
-                )
-                
-                print(f"🎉 Task submission confirmed!")
-                print(f"💰 Total Amount: ${total_amount}")
-                
-                # Wait 10 seconds before sending cooldown notification
-                print(f"⏳ Waiting 10 seconds before cooldown notification...")
-                time.sleep(10)
-                
-                # Now send cooldown notification
-                remaining = self.get_cooldown_remaining()
-                hours = remaining.total_seconds() / 3600 if remaining else 0
-                
-                self.send_notification(
-                    "Cooldown Started",
-                    f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
-                    priority="default",
-                    tags="hourglass"
-                )
-                
-                print(f"⏰ Cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
-                
-                # Clear task tracking
-                self.task_claimed_at = None
-                self.task_deadline = None
-                self.deadline_warning_sent = False
-                self.deadline_final_warning_sent = False
-                self.current_task_id = None
-                self.current_task_type = None
-                
-                # Reset assigned task notification flag
-                if hasattr(self, '_assigned_task_notified'):
-                    self._assigned_task_notified = False
-                
-                return True
+                # If cooldown is detected (can't claim), task was submitted!
+                if not can_claim and allowed_after:
+                    print(f"✅ Cooldown detected on server - Task was submitted!")
+                    
+                    # Step 1: Send "Task Submitted" notification first
+                    task_summary = self.get_task_summary()
+                    total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
+                    
+                    self.send_notification(
+                        "Task Submitted",
+                        f"🎯 ${total_amount}",
+                        priority="high",
+                        tags="dart"
+                    )
+                    
+                    print(f"🎉 Task submission confirmed!")
+                    print(f"💰 Total Amount: ${total_amount}")
+                    
+                    # Step 2: Wait 30 seconds
+                    print(f"⏳ Waiting 30 seconds before syncing cooldown...")
+                    time.sleep(30)
+                    
+                    # Step 3: Sync cooldown from server (this will save it locally)
+                    print(f"🔄 Syncing cooldown from server...")
+                    self.sync_cooldown_from_server()
+                    
+                    # Step 4: Send cooldown notification
+                    remaining = self.get_cooldown_remaining()
+                    hours = remaining.total_seconds() / 3600 if remaining else 0
+                    
+                    self.send_notification(
+                        "Cooldown Started",
+                        f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                        priority="default",
+                        tags="hourglass"
+                    )
+                    
+                    print(f"⏰ Cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
+                    
+                    # Clear task tracking
+                    self.task_claimed_at = None
+                    self.task_deadline = None
+                    self.deadline_warning_sent = False
+                    self.deadline_final_warning_sent = False
+                    self.current_task_id = None
+                    self.current_task_type = None
+                    
+                    # Reset assigned task notification flag
+                    if hasattr(self, '_assigned_task_notified'):
+                        self._assigned_task_notified = False
+                    
+                    return True
             
-            # Task still in progress
+            # No cooldown detected - task still in progress
+            print(f"📋 No cooldown detected - task still in progress")
             return False
                     
         except Exception as e:
@@ -1037,6 +1057,7 @@ class TaskFluxBot:
     def is_content_safe(self, content):
         """
         Check if task content is safe and unlikely to be removed by AutoMod or moderators
+        Balanced checking based on actual Reddit AutoMod patterns
         Returns: (is_safe: bool, reason: str)
         """
         if not content:
@@ -1049,33 +1070,37 @@ class TaskFluxBot:
             if pattern.lower() in content_lower:
                 return False, f"Contains suspicious pattern: '{pattern}'"
         
-        # Check for excessive caps (>50% of letters are uppercase)
+        # Check for excessive caps (>60% caps with minimum 15 letters)
+        # AutoMod often flags ALL CAPS as spam
         letters = [c for c in content if c.isalpha()]
-        if letters:
+        if letters and len(letters) > 15:
             caps_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
-            if caps_ratio > 0.5 and len(letters) > 10:
+            if caps_ratio > 0.6:
                 return False, "Excessive uppercase (possible spam)"
         
-        # Check for excessive punctuation/special chars
+        # Check for excessive punctuation/special chars (>25%)
+        # Multiple exclamation marks, dollar signs often trigger filters
         special_chars = sum(1 for c in content if c in '!?$#@*')
         if len(content) > 0:
             special_ratio = special_chars / len(content)
-            if special_ratio > 0.2:
+            if special_ratio > 0.25:
                 return False, "Excessive special characters"
         
-        # Check for excessive emojis (simple check for common emoji patterns)
+        # Check for excessive emojis (>5 promotional emojis)
         emoji_count = content.count('🔥') + content.count('💰') + content.count('💵') + content.count('🚀')
-        if emoji_count > 3:
+        if emoji_count > 5:
             return False, "Excessive promotional emojis"
         
-        # Check for very short low-effort comments (less than 10 chars)
-        if len(content.strip()) < 10:
+        # Check for very short comments (less than 5 chars)
+        # Extremely short comments like "a", "ok" might be filtered
+        if len(content.strip()) < 5:
             return False, "Comment too short (likely low-effort)"
         
-        # Check for repetitive characters (like "hahahaha" or "!!!!!")
+        # Check for repetitive characters (6+ same char in a row)
+        # "hahahahaha", "!!!!!!!!" commonly trigger spam filters
         for char in set(content):
-            if content.count(char * 5) > 0:  # 5 or more of the same char in a row
-                return False, f"Repetitive characters detected: '{char * 5}'"
+            if content.count(char * 6) > 0:
+                return False, f"Repetitive characters detected"
         
         return True, "Content appears safe"
     
@@ -1337,7 +1362,7 @@ class TaskFluxBot:
                                 # Check task deadline and send warnings if needed
                                 self.check_task_deadline()
                                 
-                                # Check if task was completed (checks every 1 minute)
+                                # Check if task was completed (checks every 2 minutes)
                                 task_completed = self.check_task_completion()
                                 
                                 if task_completed:
@@ -1379,9 +1404,9 @@ class TaskFluxBot:
                                     self._task_monitor_sleep_notified = False
                                     continue
                                 
-                                # Sleep for 1 minute to check task submission frequently
-                                sleep_time = 60  # 1 minute
-                                print(f"💤 Sleeping for {sleep_time}s (1 minute) to check task submission...")
+                                # Sleep for 2 minutes to check task submission
+                                sleep_time = 120  # 2 minutes
+                                print(f"💤 Sleeping for {sleep_time}s (2 minutes) to check task submission...")
                                 
                                 next_check = datetime.now() + timedelta(seconds=sleep_time)
                                 print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
@@ -1512,6 +1537,16 @@ class TaskFluxBot:
                         # Sleep until cooldown ends (with 5 second buffer)
                         sleep_time = max(60, int(remaining.total_seconds()) + 5)
                         
+                        # Send notification if cooldown is ending in 10 minutes
+                        if minutes <= 10 and minutes > 5 and not hasattr(self, '_cooldown_10min_notified'):
+                            self._cooldown_10min_notified = True
+                            self.send_notification(
+                                "10 Minutes Left",
+                                f"⏰ {minutes:.0f}min\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                                priority="high",
+                                tags="alarm_clock"
+                            )
+                        
                         # Send notification if cooldown is ending soon (≤5 minutes)
                         if minutes <= 5 and not hasattr(self, '_cooldown_ending_notified'):
                             self._cooldown_ending_notified = True
@@ -1600,15 +1635,19 @@ class TaskFluxBot:
                             tags="robot"
                         )
                     
+                    # Clear 10-minute notification flag if it exists
+                    if hasattr(self, '_cooldown_10min_notified'):
+                        delattr(self, '_cooldown_10min_notified')
+                    
                     # Check and claim tasks (will sync with server)
                     claimed = self.check_and_claim_tasks()
                     
                     if claimed:
                         # Task claimed! Now wait for task monitoring
                         print(f"\n✅ Task claimed successfully!")
-                        print(f"⏰ Switching to task monitoring mode (1-minute checks)")
+                        print(f"⏰ Switching to task monitoring mode (2-minute checks)")
                         print(f"{'='*60}")
-                        time.sleep(60)  # Wait 1 minute before next check
+                        time.sleep(120)  # Wait 2 minutes before first check
                         continue
                     
                     # No task claimed - it could be:

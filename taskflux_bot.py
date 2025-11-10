@@ -120,7 +120,11 @@ class TaskFluxBot:
         return remaining
     
     def send_notification(self, title, message, priority="default", tags=None):
-        """Send notification via ntfy"""
+        """Send notification via ntfy with retry logic"""
+        if not self.ntfy_url:
+            print(f"⚠️ No ntfy URL configured, skipping notification")
+            return
+            
         try:
             # Remove emojis and non-Latin-1 characters from title for HTTP header compatibility
             # HTTP headers must be Latin-1 compatible and cannot have leading/trailing whitespace
@@ -141,14 +145,31 @@ class TaskFluxBot:
             # Include original title with emojis in the message body
             full_message = f"{title}\n\n{message}" if title != clean_title else message
             
-            response = requests.post(
-                self.ntfy_url,
-                data=full_message.encode('utf-8'),
-                headers=headers
-            )
-            
-            if response.status_code != 200:
-                print(f"⚠️ Failed to send notification: {response.status_code}")
+            # Retry logic with timeout
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(
+                        self.ntfy_url,
+                        data=full_message.encode('utf-8'),
+                        headers=headers,
+                        timeout=10  # 10 second timeout
+                    )
+                    
+                    if response.status_code == 200:
+                        print(f"✅ Notification sent: {clean_title}")
+                        return  # Success
+                    else:
+                        print(f"⚠️ Failed to send notification: {response.status_code}")
+                        if attempt < max_retries - 1:
+                            time.sleep(2)  # Wait before retry
+                except requests.exceptions.RequestException as req_err:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️ Network error (attempt {attempt + 1}/{max_retries}), retrying...")
+                        time.sleep(2)
+                    else:
+                        print(f"⚠️ Failed to send notification after {max_retries} attempts: {req_err}")
+                        
         except Exception as e:
             print(f"⚠️ Error sending notification: {e}")
     
@@ -226,7 +247,7 @@ class TaskFluxBot:
                 
                 self.send_notification(
                     "Bot Started",
-                    f"🤖 {self.email}",
+                    f"🧑‍💻 {self.email}",
                     priority="default",
                     tags="robot"
                 )
@@ -282,8 +303,9 @@ class TaskFluxBot:
                         remaining = cooldown_end - datetime.now()
                         hours = remaining.total_seconds() / 3600
                         
-                        # Send notification for new cooldown
-                        if is_new_cooldown:
+                        # Send notification for new cooldown ONLY if not already being handled by check_task_completion
+                        # We check if we have an active task - if yes, let check_task_completion handle notifications
+                        if is_new_cooldown and not self.task_claimed_at:
                             self.send_notification(
                                 "Cooldown Active",
                                 f"⌛ {hours:.1f}h left\n⏰ {cooldown_end.strftime('%I:%M %p IST')}",
@@ -474,7 +496,7 @@ class TaskFluxBot:
                 print(f"🎯 TASK DETAILS")
                 print(f"{'═'*60}")
                 print(f"📋 Type: {task_type.upper()}")
-                print(f"💰 Price: ${task_price}")
+                print(f"💵 Price: ${task_price}")
                 print(f"🆔 Task ID: {task_id}")
                 print(f"⏰ Claimed at: {claim_time.strftime('%I:%M:%S %p IST')}")
                 print(f"⏰ DEADLINE: {deadline_time.strftime('%I:%M %p IST')} (6 hours)")
@@ -526,7 +548,7 @@ class TaskFluxBot:
                 
                 # Format notification with only necessary info
                 task_info = f"🎯 Type: {task_type.upper()}\n"
-                task_info += f"� Price: ${task_price}\n"
+                task_info += f"💵 Price: ${task_price}\n"
                 task_info += f"⏰ Deadline: {deadline_time.strftime('%I:%M %p IST')}\n"
                 task_info += f"⏳ Time Left: {hours_left:.1f}h"
                 
@@ -589,14 +611,23 @@ class TaskFluxBot:
                 self.current_task_id = None
                 self.current_task_type = None
                 
+                # Reset assigned task notification flag
+                if hasattr(self, '_assigned_task_notified'):
+                    self._assigned_task_notified = False
+                
+                # Send task submitted notification first
                 self.send_notification(
                     "Task Submitted",
-                    f"💰 ${total_amount}",
+                    f"🎯 ${total_amount}",
                     priority="high",
-                    tags="moneybag"
+                    tags="dart"
                 )
                 
-                # Send cooldown notification
+                # Wait 10 seconds before sending cooldown notification
+                print(f"⏳ Waiting 10 seconds before cooldown notification...")
+                time.sleep(10)
+                
+                # Now send cooldown notification
                 self.send_notification(
                     "Cooldown Started",
                     f"⌛ 24h\n🕐 {cooldown_end_ist.strftime('%I:%M %p IST')}",
@@ -661,18 +692,22 @@ class TaskFluxBot:
                 task_summary = self.get_task_summary()
                 total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
                 
-                # Send submission notification
+                # Send submission notification first
                 self.send_notification(
                     "Task Submitted",
-                    f"💰 ${total_amount}",
+                    f"🎯 ${total_amount}",
                     priority="high",
-                    tags="moneybag"
+                    tags="dart"
                 )
                 
                 print(f"🎉 Task submission confirmed!")
                 print(f"💰 Total Amount: ${total_amount}")
                 
-                # Send cooldown notification
+                # Wait 10 seconds before sending cooldown notification
+                print(f"⏳ Waiting 10 seconds before cooldown notification...")
+                time.sleep(10)
+                
+                # Now send cooldown notification
                 remaining = self.get_cooldown_remaining()
                 hours = remaining.total_seconds() / 3600 if remaining else 0
                 
@@ -692,6 +727,10 @@ class TaskFluxBot:
                 self.deadline_final_warning_sent = False
                 self.current_task_id = None
                 self.current_task_type = None
+                
+                # Reset assigned task notification flag
+                if hasattr(self, '_assigned_task_notified'):
+                    self._assigned_task_notified = False
                 
                 return True
             
@@ -765,6 +804,11 @@ class TaskFluxBot:
             self.deadline_final_warning_sent = False
             self.current_task_id = None
             self.current_task_type = None
+            
+            # Reset assigned task notification flag
+            if hasattr(self, '_assigned_task_notified'):
+                self._assigned_task_notified = False
+            
             return
         
         # Send warning at 2 hours remaining
@@ -920,7 +964,7 @@ class TaskFluxBot:
                     print(f"⚠️ ASSIGNED TASK DETECTED")
                     print(f"{'═'*60}")
                     print(f"📋 Type: {task_type}")
-                    print(f"💰 Price: ${task_price}")
+                    print(f"💵 Price: ${task_price}")
                     print(f"🆔 Task ID: {task_id}")
                     print(f"⏰ Assigned at: {claimed_time.strftime('%I:%M:%S %p IST')}")
                     print(f"⏰ DEADLINE: {deadline_time.strftime('%I:%M %p IST')}")
@@ -932,7 +976,7 @@ class TaskFluxBot:
                         if hours_remaining > 0:
                             self.send_notification(
                                 "Assigned Task Found",
-                                f"📋 {task_type}\n💰 ${task_price}\n🕐 {deadline_time.strftime('%I:%M %p IST')}\n⏳ {hours_remaining:.1f}h left",
+                                f"📋 {task_type}\n💵 ${task_price}\n🕐 {deadline_time.strftime('%I:%M %p IST')}\n⏳ {hours_remaining:.1f}h left",
                                 priority="urgent",
                                 tags="pushpin"
                             )
@@ -940,7 +984,7 @@ class TaskFluxBot:
                             # Deadline already passed
                             self.send_notification(
                                 "Task Deadline Passed",
-                                f"⛔ {task_type}\n💰 ${task_price}\n🕐 {deadline_time.strftime('%I:%M %p IST')}",
+                                f"⛔ {task_type}\n💵 ${task_price}\n🕐 {deadline_time.strftime('%I:%M %p IST')}",
                                 priority="urgent",
                                 tags="no_entry"
                             )
@@ -960,7 +1004,7 @@ class TaskFluxBot:
                 if send_notification:
                     self.send_notification(
                         "Assigned Task Found",
-                        f"🎯 {task_type}\n💰 ${task_price}\n🆔 {task_id}",
+                        f"🎯 {task_type}\n💵 ${task_price}\n🆔 {task_id}",
                         priority="high",
                         tags="pushpin"
                     )
@@ -979,8 +1023,9 @@ class TaskFluxBot:
             now_ist = datetime.now(ist)
             current_hour = now_ist.hour
             
-            # Allowed hours: 8 AM (8) to 11 PM (23)
-            if 8 <= current_hour <= 23:
+            # Allowed hours: 8 AM (8) to 10:59 PM (22:59)
+            # Hour 23 = 11:00 PM onwards, which should be blocked
+            if 8 <= current_hour < 23:
                 return True
             else:
                 print(f"⏰ Outside claiming hours (8 AM - 11 PM IST). Current time: {now_ist.strftime('%I:%M %p IST')}")
@@ -1152,13 +1197,38 @@ class TaskFluxBot:
         # Quick summary
         print(f"📊 Filtering: {len(tasks)} total → {len(claimable_tasks)} claimable, {len(rejected_tasks)} rejected")
         
+        # Show rejection details if any tasks were rejected
+        if rejected_tasks:
+            print(f"\n🚫 REJECTED TASKS DETAILS:")
+            for i, rejected in enumerate(rejected_tasks[:5], 1):  # Show max 5 rejections
+                task_id = rejected['task'].get('_id', 'unknown')
+                print(f"   {i}. Task {task_id[:8]}...")
+                print(f"      Reason: {rejected['reason']}")
+                if rejected['content']:
+                    # Show snippet of content
+                    content_snippet = rejected['content'][:100]
+                    if len(rejected['content']) > 100:
+                        content_snippet += "..."
+                    print(f"      Content: {content_snippet}")
+            if len(rejected_tasks) > 5:
+                print(f"   ... and {len(rejected_tasks) - 5} more rejected tasks")
+            print()
+        
         if not claimable_tasks:
             print(f"⚠️ No safe claimable tasks found!")
+            
+            # Build detailed rejection summary for notification
+            rejection_reasons = {}
+            for rejected in rejected_tasks:
+                reason_key = rejected['reason'].split('-')[0].strip()  # Get main reason
+                rejection_reasons[reason_key] = rejection_reasons.get(reason_key, 0) + 1
+            
+            rejection_summary = "\n".join([f"• {reason}: {count}" for reason, count in rejection_reasons.items()])
             
             # Send single summary notification
             self.send_notification(
                 "No Claimable Tasks",
-                f"🔍 {len(tasks)} found\n🚫 All rejected\n⏱️ Retry in 3s",
+                f"🔍 {len(tasks)} found\n🚫 All rejected\n\n{rejection_summary}\n\n⏱️ Retry in 3s",
                 priority="low",
                 tags="mag"
             )
@@ -1258,9 +1328,10 @@ class TaskFluxBot:
                                 print(f"   Task assigned: {hours_remaining:.1f}h remaining to complete")
                                 print(f"{'='*60}")
                                 
-                                # Send notification ONLY on first check with full task details
-                                # After that, deadline warnings will be sent by check_task_deadline()
-                                if loop_count == 1:
+                                # Send notification on first detection of assigned task
+                                # Use a flag to prevent duplicate notifications
+                                if not hasattr(self, '_assigned_task_notified') or not self._assigned_task_notified:
+                                    self._assigned_task_notified = True
                                     self.check_for_running_task(send_notification=True)  # Get full task details and send notification
                                 
                                 # Check task deadline and send warnings if needed
@@ -1274,6 +1345,38 @@ class TaskFluxBot:
                                     print(f"✅ Task completed! Exiting task monitoring mode.")
                                     print(f"🔄 Will check cooldown status on next iteration...")
                                     time.sleep(3)  # Short sleep before checking cooldown
+                                    continue
+                                
+                                # Check if outside claiming hours - sleep until 8 AM
+                                if not self.is_within_claiming_hours():
+                                    ist = pytz.timezone('Asia/Kolkata')
+                                    now_ist = datetime.now(ist)
+                                    
+                                    if now_ist.hour >= 23:
+                                        next_8am = (now_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+                                    else:
+                                        next_8am = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
+                                    
+                                    time_until_8am = next_8am - now_ist
+                                    sleep_seconds = int(time_until_8am.total_seconds()) + 60
+                                    hours_until = sleep_seconds / 3600
+                                    
+                                    print(f"😴 Task monitoring paused - Outside claiming hours")
+                                    print(f"💤 Sleeping for {hours_until:.1f}h until 8 AM IST")
+                                    print(f"⏰ Will resume monitoring at: {next_8am.strftime('%I:%M %p IST')}")
+                                    
+                                    # Send sleep notification
+                                    if not hasattr(self, '_task_monitor_sleep_notified') or not self._task_monitor_sleep_notified:
+                                        self._task_monitor_sleep_notified = True
+                                        self.send_notification(
+                                            "Task Monitor Sleeping",
+                                            f"😴 {hours_until:.1f}h\n⏰ Resume: {next_8am.strftime('%I:%M %p')} IST\n📋 Task still assigned",
+                                            priority="default",
+                                            tags="zzz"
+                                        )
+                                    
+                                    time.sleep(sleep_seconds)
+                                    self._task_monitor_sleep_notified = False
                                     continue
                                 
                                 # Sleep for 1 minute to check task submission frequently
@@ -1292,8 +1395,10 @@ class TaskFluxBot:
                             print(f"   Task assigned on server")
                             print(f"{'='*60}")
                             
-                            # Send notification ONLY on first check with full task details
-                            if loop_count == 1:
+                            # Send notification on first detection of assigned task
+                            # Use a flag to prevent duplicate notifications
+                            if not hasattr(self, '_assigned_task_notified') or not self._assigned_task_notified:
+                                self._assigned_task_notified = True
                                 self.check_for_running_task(send_notification=True)
                             
                             # Check if task was submitted (cooldown detection)
@@ -1304,6 +1409,38 @@ class TaskFluxBot:
                                 print(f"✅ Task submitted! Exiting task monitoring mode.")
                                 print(f"🔄 Will check cooldown status on next iteration...")
                                 time.sleep(3)  # Short sleep before checking cooldown
+                                continue
+                            
+                            # Check if outside claiming hours - sleep until 8 AM
+                            if not self.is_within_claiming_hours():
+                                ist = pytz.timezone('Asia/Kolkata')
+                                now_ist = datetime.now(ist)
+                                
+                                if now_ist.hour >= 23:
+                                    next_8am = (now_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+                                else:
+                                    next_8am = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
+                                
+                                time_until_8am = next_8am - now_ist
+                                sleep_seconds = int(time_until_8am.total_seconds()) + 60
+                                hours_until = sleep_seconds / 3600
+                                
+                                print(f"😴 Task monitoring paused - Outside claiming hours")
+                                print(f"💤 Sleeping for {hours_until:.1f}h until 8 AM IST")
+                                print(f"⏰ Will resume monitoring at: {next_8am.strftime('%I:%M %p IST')}")
+                                
+                                # Send sleep notification
+                                if not hasattr(self, '_task_monitor_sleep_notified') or not self._task_monitor_sleep_notified:
+                                    self._task_monitor_sleep_notified = True
+                                    self.send_notification(
+                                        "Task Monitor Sleeping",
+                                        f"😴 {hours_until:.1f}h\n⏰ Resume: {next_8am.strftime('%I:%M %p')} IST\n📋 Task still assigned",
+                                        priority="default",
+                                        tags="zzz"
+                                    )
+                                
+                                time.sleep(sleep_seconds)
+                                self._task_monitor_sleep_notified = False
                                 continue
                             
                             # Task still in progress - check again in 2 minutes
@@ -1354,7 +1491,7 @@ class TaskFluxBot:
                                 # Send task submission notification
                                 self.send_notification(
                                     "Task Submitted",
-                                    f"✅ ${total_amount}",
+                                    f"💵 ${total_amount}",
                                     priority="high",
                                     tags="white_check_mark"
                                 )
@@ -1367,9 +1504,9 @@ class TaskFluxBot:
                             # Now send cooldown notification
                             self.send_notification(
                                 "Cooldown Active",
-                                f"⏱️ {hours:.1f}h left\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                                f"⌛ {hours:.1f}h left\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
                                 priority="default",
-                                tags="timer_clock"
+                                tags="hourglass"
                             )
                         
                         # Sleep until cooldown ends (with 5 second buffer)
@@ -1385,6 +1522,50 @@ class TaskFluxBot:
                                 tags="bell"
                             )
                         
+                        # Check if cooldown will end during off-hours (before 8 AM or at/after 11 PM)
+                        ist = pytz.timezone('Asia/Kolkata')
+                        cooldown_end_ist = self.cooldown_end
+                        if cooldown_end_ist.tzinfo is None:
+                            cooldown_end_ist = ist.localize(cooldown_end_ist)
+                        
+                        cooldown_end_hour = cooldown_end_ist.hour
+                        
+                        # If cooldown ends outside claiming hours (before 8 AM or at/after 11 PM)
+                        if cooldown_end_hour < 8 or cooldown_end_hour >= 23:
+                            # Sleep until 8 AM instead of waking up during off-hours
+                            now_ist = datetime.now(ist)
+                            
+                            if cooldown_end_hour >= 23:
+                                # Cooldown ends after 11 PM - sleep until next day 8 AM
+                                next_8am = (cooldown_end_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+                            else:
+                                # Cooldown ends before 8 AM - sleep until that day's 8 AM
+                                next_8am = cooldown_end_ist.replace(hour=8, minute=0, second=0, microsecond=0)
+                            
+                            time_until_8am = next_8am - now_ist
+                            sleep_seconds = int(time_until_8am.total_seconds()) + 60
+                            hours_until = sleep_seconds / 3600
+                            
+                            print(f"⚠️ Cooldown ends during off-hours ({cooldown_end_ist.strftime('%I:%M %p')})")
+                            print(f"😴 Will sleep until 8 AM instead")
+                            print(f"💤 Sleeping for {hours_until:.1f}h until 8 AM IST")
+                            print(f"⏰ Will resume at: {next_8am.strftime('%I:%M %p IST')}")
+                            
+                            # Send adjusted sleep notification
+                            if not hasattr(self, '_cooldown_offhours_notified') or not self._cooldown_offhours_notified:
+                                self._cooldown_offhours_notified = True
+                                self.send_notification(
+                                    "Sleeping Until 8 AM",
+                                    f"⏰ Cooldown ends at {cooldown_end_ist.strftime('%I:%M %p')} (off-hours)\n😴 {hours_until:.1f}h\n☀️ Resume: {next_8am.strftime('%I:%M %p')} IST",
+                                    priority="default",
+                                    tags="zzz"
+                                )
+                            
+                            time.sleep(sleep_seconds)
+                            self._cooldown_offhours_notified = False
+                            continue
+                        
+                        # Cooldown ends during claiming hours - sleep until cooldown ends
                         print(f"💤 Sleeping for {sleep_time/60:.1f} minutes until cooldown ends...")
                         
                         next_check = datetime.now() + timedelta(seconds=sleep_time)
@@ -1414,9 +1595,9 @@ class TaskFluxBot:
                         delattr(self, '_cooldown_ending_notified')
                         self.send_notification(
                             "Ready",
-                            f"🟢 Cooldown ended",
+                            f"🔥 Cooldown ended",
                             priority="high",
-                            tags="green_circle"
+                            tags="robot"
                         )
                     
                     # Check and claim tasks (will sync with server)
@@ -1428,6 +1609,59 @@ class TaskFluxBot:
                         print(f"⏰ Switching to task monitoring mode (1-minute checks)")
                         print(f"{'='*60}")
                         time.sleep(60)  # Wait 1 minute before next check
+                        continue
+                    
+                    # No task claimed - it could be:
+                    # 1. Outside claiming hours (8 AM - 11 PM IST)
+                    # 2. No tasks available
+                    # 3. All tasks rejected (unsafe content)
+                    
+                    # Check if currently outside claiming hours and sleep until 8 AM
+                    ist = pytz.timezone('Asia/Kolkata')
+                    now_ist = datetime.now(ist)
+                    current_hour = now_ist.hour
+                    
+                    if current_hour < 8 or current_hour >= 23:
+                        # Outside claiming hours - sleep until 8 AM IST
+                        if now_ist.hour >= 23:
+                            # After 11 PM - wait until 8 AM tomorrow
+                            next_8am = (now_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+                        else:
+                            # Before 8 AM - wait until 8 AM today
+                            next_8am = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
+                        
+                        time_until_8am = next_8am - now_ist
+                        sleep_seconds = int(time_until_8am.total_seconds()) + 60  # Add 1 minute buffer
+                        hours_until = sleep_seconds / 3600
+                        
+                        print(f"{'='*60}")
+                        print(f"😴 Sleeping for {hours_until:.1f}h until 8 AM IST")
+                        print(f"⏰ Next check: #{loop_count + 1} at {next_8am.strftime('%I:%M %p IST on %B %d')}")
+                        print(f"{'='*60}")
+                        
+                        # Send sleep notification (only once per sleep session)
+                        if not hasattr(self, '_sleep_notified') or not self._sleep_notified:
+                            self._sleep_notified = True
+                            self.send_notification(
+                                "Bot Sleeping",
+                                f"😴 {hours_until:.1f}h\n⏰ Resume: {next_8am.strftime('%I:%M %p')} IST",
+                                priority="default",
+                                tags="zzz"
+                            )
+                        
+                        time.sleep(sleep_seconds)
+                        
+                        # Reset sleep notification flag when waking up
+                        self._sleep_notified = False
+                        
+                        # Send wake-up notification
+                        self.send_notification(
+                            "Bot Awake",
+                            f"☀️ Ready to claim!\n🕐 {next_8am.strftime('%I:%M %p')} IST",
+                            priority="high",
+                            tags="sunny"
+                        )
+                        
                         continue
                     
                     # No task claimed - check again in 3 seconds
@@ -1468,9 +1702,9 @@ class TaskFluxBot:
             
             self.send_notification(
                 "Bot Stopped",
-                f"🔴 Stopped",
+                f"💀 Stopped",
                 priority="default",
-                tags="red_circle"
+                tags="robot"
             )
 
 

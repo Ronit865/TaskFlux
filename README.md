@@ -16,7 +16,17 @@ pip install -r requirements.txt
 EMAIL=your_email@gmail.com
 PASSWORD=your_taskflux_password
 NTFY_URL=https://ntfy.sh/your_unique_topic
+MAX_TASKS=5
 ```
+
+**Environment Variables:**
+- `EMAIL`: Your TaskFlux account email
+- `PASSWORD`: Your TaskFlux password
+- `NTFY_URL`: Your ntfy notification URL
+- `MAX_TASKS`: Max tasks to claim when >2 available (default: 1, range: 1-10)
+  - Not set or `MAX_TASKS=1` → Conservative (1 task when >2 available)
+  - `MAX_TASKS=5` → Aggressive (5 tasks concurrently for speed)
+  - `MAX_TASKS=10` → Maximum (10 tasks, may hit rate limits)
 
 ### 3. Setup Mobile Notifications
 - Install [ntfy app](https://ntfy.sh) (Android/iOS)
@@ -34,8 +44,9 @@ python taskflux_bot.py
 
 **Speed**
 - 🔥 3-second task checking (claims before others)
-- ⚡ Instant claiming on detection
-- 💨 60-second completion monitoring
+- ⚡ Concurrent claiming (up to MAX_TASKS at once)
+- 💨 Sub-second multi-task claiming
+- 🚀 Thread-based parallel requests
 
 **Intelligence**
 - 🛡️ Content safety filtering (80+ patterns)
@@ -74,9 +85,13 @@ Login → Check Assigned Task → Monitor (60s checks)
    ↓                              ↓
 Sync Cooldown → Sleep 24h    Task Done
    ↓                              ↓
-Check Tasks (3s) → Filter → Claim → Monitor → Loop
+Check Tasks (3s) → Filter → Claim (1-5 tasks) → Monitor → Loop
+                              ↓
+                    >2 tasks? Claim MAX_TASKS concurrently
+                    ≤2 tasks? Claim 1 task
 ```
 
+**Multi-Task Claiming:** When >2 tasks available, claims up to MAX_TASKS simultaneously  
 **Completion Detection:** Monitors cooldown endpoint = task submitted  
 **Earnings Tracking:** Fetches from `/api/tasks/task-summary`
 
@@ -124,6 +139,12 @@ run_bot.bat          # Windows launcher
 - Task monitoring: 60 seconds (when assigned)
 - Cooldown sleep: 24 hours (full duration)
 
+**Multi-Task Claiming:**
+- Threshold: >2 available tasks triggers multi-claim
+- Max concurrent: Configurable via MAX_TASKS (default: 1)
+- Speed: All claims sent simultaneously via ThreadPoolExecutor
+- Safety limit: 1-10 tasks maximum
+
 **Timezone:** All times in IST (Asia/Kolkata)
 
 **Requirements:**
@@ -149,11 +170,17 @@ run_bot.bat          # Windows launcher
 
 🔄 Check #1 at 05:54 PM
 🔍 Checking for tasks...
-📋 Found 2 tasks
-✅ Claiming first safe task...
+📋 Found 6 tasks
+🎯 CLAIMING 5 TASKS CONCURRENTLY (more than 3 available, MAX_TASKS=5)...
+
+✅ Task 1/5 claimed successfully!
+✅ Task 2/5 claimed successfully!
+✅ Task 3/5 claimed successfully!
+✅ Task 4/5 claimed successfully!
+✅ Task 5/5 claimed successfully!
 
 ════════════════════════════════════
-🎯 TASK ASSIGNED
+🎯 TASK DETAILS (Task 1)
 ════════════════════════════════════
 📋 RedditCommentTask
 💰 $2.00
@@ -161,10 +188,11 @@ run_bot.bat          # Windows launcher
 📍 r/AskReddit
 ════════════════════════════════════
 
+(5 tasks claimed in ~1 second!)
 (Monitoring every 60s...)
 
-✅ Task submitted!
-💰 Total: $23.00
+✅ Tasks submitted!
+💰 Total: $33.00
 ⏱️ Cooldown: 24h
 ```
 

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
 import pytz
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Load environment variables
 load_dotenv()
@@ -20,6 +21,20 @@ class TaskFluxBot:
         self.user_id = None
         self.cooldown_end = None
         self.cooldown_file = "cooldown.json"
+        
+        # Maximum tasks to claim when more than 2 are available
+        # Default is 1 (conservative), can be configured via MAX_TASKS env variable
+        try:
+            self.max_tasks = int(os.getenv("MAX_TASKS", "1"))
+            if self.max_tasks < 1:
+                self.max_tasks = 1
+                print(f"⚠️ MAX_TASKS must be >= 1, using default: 1")
+            elif self.max_tasks > 10:
+                self.max_tasks = 10
+                print(f"⚠️ MAX_TASKS limited to maximum 10 for safety")
+        except ValueError:
+            self.max_tasks = 1
+            print(f"⚠️ Invalid MAX_TASKS value, using default: 1")
         
         # Checking interval (in seconds)
         # IMPORTANT: Tasks are PUBLIC and disappear FAST (seconds/minutes)
@@ -1261,38 +1276,96 @@ class TaskFluxBot:
         
         # ═══════════════════════════════════════════════════════════
         # CLAIM IMMEDIATELY - Don't wait!
+        # If more than 2 claimable tasks, claim up to MAX_TASKS at same time
+        # Speed is CRITICAL - use concurrent requests for maximum speed
         # ═══════════════════════════════════════════════════════════
-        print(f"🎯 CLAIMING FIRST SAFE TASK IMMEDIATELY...")
+        num_claimable = len(claimable_tasks)
         
-        task = claimable_tasks[0]
-        task_id = task.get('_id') or task.get('id') or task.get('taskId')
-        task_type = task.get('type', 'N/A')
+        if num_claimable > 2:
+            # Claim up to MAX_TASKS tasks CONCURRENTLY for maximum speed
+            tasks_to_claim = min(self.max_tasks, num_claimable)
+            print(f"🎯 CLAIMING {tasks_to_claim} TASKS CONCURRENTLY (more than 2 available, MAX_TASKS={self.max_tasks})...")
+            
+            # Prepare tasks to claim
+            tasks_list = []
+            for i in range(tasks_to_claim):
+                task = claimable_tasks[i]
+                task_id = task.get('_id') or task.get('id') or task.get('taskId')
+                if task_id:
+                    tasks_list.append((task_id, task))
+            
+            # Claim all tasks CONCURRENTLY using ThreadPoolExecutor
+            claimed_count = 0
+            failed_count = 0
+            
+            with ThreadPoolExecutor(max_workers=tasks_to_claim) as executor:
+                # Submit all claim requests simultaneously
+                future_to_task = {
+                    executor.submit(self.claim_task, task_id, task_details): (i+1, task_id) 
+                    for i, (task_id, task_details) in enumerate(tasks_list)
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_task):
+                    task_num, task_id = future_to_task[future]
+                    try:
+                        claimed = future.result()
+                        if claimed:
+                            claimed_count += 1
+                            print(f"✅ Task {task_num}/{tasks_to_claim} claimed successfully! (ID: {task_id[:8]}...)")
+                        else:
+                            failed_count += 1
+                            print(f"❌ Failed to claim task {task_num}/{tasks_to_claim} (ID: {task_id[:8]}...)")
+                    except Exception as e:
+                        failed_count += 1
+                        print(f"❌ Error claiming task {task_num}/{tasks_to_claim}: {e}")
+        else:
+            # Claim only 1 task (2 or fewer available)
+            tasks_to_claim = 1
+            print(f"🎯 CLAIMING FIRST SAFE TASK IMMEDIATELY...")
+            
+            claimed_count = 0
+            failed_count = 0
+            
+            task = claimable_tasks[0]
+            task_id = task.get('_id') or task.get('id') or task.get('taskId')
+            
+            if not task_id:
+                print(f"❌ No task ID found!")
+                return False
+            
+            # Claim the task (speed is critical!)
+            claimed = self.claim_task(task_id, task_details=task)
+            
+            if claimed:
+                claimed_count = 1
+                print(f"✅ Task claimed successfully!")
+            else:
+                failed_count = 1
+                print(f"❌ Failed to claim task")
         
-        if not task_id:
-            print(f"❌ No task ID found!")
-            return False
-        
-        # Claim the task FIRST (speed is critical!)
-        claimed = self.claim_task(task_id, task_details=task)
-        
-        if not claimed:
-            print(f"❌ Failed to claim task")
+        if claimed_count == 0:
+            print(f"❌ Failed to claim any tasks")
             return False
         
         # NOW send summary notification after claiming
-        print(f"\n� TASK SUMMARY:")
+        print(f"\n📊 TASK SUMMARY:")
         print(f"   Total tasks found: {len(tasks)}")
         print(f"   Claimable: {len(claimable_tasks)}")
         print(f"   Rejected: {len(rejected_tasks)}")
-        print(f"   Claimed: ✅ YES")
+        print(f"   Claimed: ✅ {claimed_count}")
+        if failed_count > 0:
+            print(f"   Failed: ❌ {failed_count}")
         
         # Send single summary notification AFTER claiming
         summary_msg = f"📊 Task Check Summary\n\n"
-        summary_msg += f"� Total Found: {len(tasks)}\n"
+        summary_msg += f"🔍 Total Found: {len(tasks)}\n"
         summary_msg += f"✅ Claimable: {len(claimable_tasks)}\n"
         summary_msg += f"🚫 Rejected: {len(rejected_tasks)}\n"
-        summary_msg += f"🎯 Claimed: YES\n\n"
-        summary_msg += f"Task details sent separately!"
+        summary_msg += f"🎯 Claimed: {claimed_count}"
+        if failed_count > 0:
+            summary_msg += f"\n❌ Failed: {failed_count}"
+        summary_msg += f"\n\nTask details sent separately!"
         
         self.send_notification(
             "Task Check Summary",

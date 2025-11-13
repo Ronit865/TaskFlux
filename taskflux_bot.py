@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
 import pytz
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Load environment variables
 load_dotenv()
@@ -21,20 +20,6 @@ class TaskFluxBot:
         self.user_id = None
         self.cooldown_end = None
         self.cooldown_file = "cooldown.json"
-        
-        # Maximum tasks to claim when more than 2 are available
-        # Default is 1 (conservative), can be configured via MAX_TASKS env variable
-        try:
-            self.max_tasks = int(os.getenv("MAX_TASKS", "1"))
-            if self.max_tasks < 1:
-                self.max_tasks = 1
-                print(f"⚠️ MAX_TASKS must be >= 1, using default: 1")
-            elif self.max_tasks > 10:
-                self.max_tasks = 10
-                print(f"⚠️ MAX_TASKS limited to maximum 10 for safety")
-        except ValueError:
-            self.max_tasks = 1
-            print(f"⚠️ Invalid MAX_TASKS value, using default: 1")
         
         # Checking interval (in seconds)
         # IMPORTANT: Tasks are PUBLIC and disappear FAST (seconds/minutes)
@@ -143,11 +128,20 @@ class TaskFluxBot:
             return None
         return remaining
     
-    def send_notification(self, title, message, priority="default", tags=None):
-        """Send notification via ntfy with retry logic"""
+    def send_notification(self, title, message, priority="default", tags=None, delay_after=0.5):
+        """
+        Send notification via ntfy with retry logic and rate limiting
+        
+        Args:
+            title: Notification title
+            message: Notification message body
+            priority: Priority level (urgent, high, default, low)
+            tags: Emoji/icon tags for notification
+            delay_after: Seconds to wait after successful send (prevents rate limiting)
+        """
         if not self.ntfy_url:
             print(f"⚠️ No ntfy URL configured, skipping notification")
-            return
+            return False
             
         try:
             # Remove emojis and non-Latin-1 characters from title for HTTP header compatibility
@@ -170,32 +164,50 @@ class TaskFluxBot:
             full_message = f"{title}\n\n{message}" if title != clean_title else message
             
             # Retry logic with timeout
-            max_retries = 2
+            max_retries = 3  # Increased from 2 to 3
             for attempt in range(max_retries):
                 try:
                     response = requests.post(
                         self.ntfy_url,
                         data=full_message.encode('utf-8'),
                         headers=headers,
-                        timeout=10  # 10 second timeout
+                        timeout=15  # Increased timeout from 10 to 15 seconds
                     )
                     
                     if response.status_code == 200:
                         print(f"✅ Notification sent: {clean_title}")
-                        return  # Success
+                        # Add delay after successful send to prevent rate limiting
+                        if delay_after > 0:
+                            time.sleep(delay_after)
+                        return True  # Success
                     else:
-                        print(f"⚠️ Failed to send notification: {response.status_code}")
+                        print(f"⚠️ Failed to send notification: HTTP {response.status_code}")
                         if attempt < max_retries - 1:
-                            time.sleep(2)  # Wait before retry
+                            print(f"   Retrying in 3 seconds...")
+                            time.sleep(3)  # Increased retry delay
+                except requests.exceptions.Timeout:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️ Notification timeout (attempt {attempt + 1}/{max_retries}), retrying...")
+                        time.sleep(3)
+                    else:
+                        print(f"❌ Notification failed after {max_retries} timeout attempts")
+                        return False
                 except requests.exceptions.RequestException as req_err:
                     if attempt < max_retries - 1:
-                        print(f"⚠️ Network error (attempt {attempt + 1}/{max_retries}), retrying...")
-                        time.sleep(2)
+                        print(f"⚠️ Network error (attempt {attempt + 1}/{max_retries}): {req_err}")
+                        print(f"   Retrying in 3 seconds...")
+                        time.sleep(3)
                     else:
-                        print(f"⚠️ Failed to send notification after {max_retries} attempts: {req_err}")
+                        print(f"❌ Notification failed after {max_retries} attempts: {req_err}")
+                        return False
+            
+            # If we exhausted all retries without success
+            print(f"❌ Failed to send notification '{clean_title}' after {max_retries} attempts")
+            return False
                         
         except Exception as e:
-            print(f"⚠️ Error sending notification: {e}")
+            print(f"❌ Error sending notification: {e}")
+            return False
     
     def login(self):
         """Login to TaskFlux"""
@@ -286,7 +298,10 @@ class TaskFluxBot:
             return False
     
     def sync_cooldown_from_server(self):
-        """Check server for existing cooldown and sync with local state"""
+        """
+        Check server for existing cooldown and sync with local state
+        Returns: True if cooldown is active, False otherwise
+        """
         try:
             # Check if we can assign task to self
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
@@ -334,10 +349,14 @@ class TaskFluxBot:
                                 "Cooldown Active",
                                 f"⌛ {hours:.1f}h left\n⏰ {cooldown_end.strftime('%I:%M %p IST')}",
                                 priority="default",
-                                tags="hourglass"
+                                tags="hourglass",
+                                delay_after=1.0
                             )
                             # Mark that we've sent cooldown notification on this startup
                             self._cooldown_notified_on_startup = True
+                        
+                        return True  # Cooldown is active
+                        
                     except Exception as e:
                         print(f"⚠️ Could not parse cooldown time: {e}")
                         print(f"   allowedAfter value: {allowed_after}")
@@ -345,6 +364,7 @@ class TaskFluxBot:
                         cooldown_end = datetime.now() + timedelta(hours=24)
                         self.save_cooldown(cooldown_end)
                         print(f"⏰ Server cooldown detected, estimated end: {cooldown_end.strftime('%I:%M %p IST')}")
+                        return True  # Assume cooldown is active
                 else:
                     # No cooldown on server
                     if self.cooldown_end:
@@ -353,17 +373,23 @@ class TaskFluxBot:
                             print(f"✅ Cooldown expired, ready to claim!")
                             self.cooldown_end = None
                             self.save_cooldown(None)
+                            return False  # No cooldown
                         else:
                             # Server says OK but we have local cooldown that hasn't expired
                             # Trust local cooldown
                             remaining = self.cooldown_end - datetime.now()
                             hours = remaining.total_seconds() / 3600
                             print(f"⏰ Local cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
+                            return True  # Cooldown still active locally
+                    
+                    return False  # No cooldown
             else:
                 print(f"⚠️ Could not check server cooldown status (HTTP {response.status_code})")
+                return False  # Assume no cooldown if can't check
                         
         except Exception as e:
             print(f"⚠️ Error syncing cooldown: {e}")
+            return False  # Assume no cooldown on error
     
     def can_claim_task(self):
         """Check if we can claim a task (not in cooldown)"""
@@ -481,9 +507,9 @@ class TaskFluxBot:
                 claim_time = datetime.now(ist)
                 deadline_time = claim_time + timedelta(hours=6)
                 
-                # Store deadline for tracking
-                self.task_claimed_at = claim_time
-                self.task_deadline = deadline_time
+                # Store deadline for tracking (convert to naive datetime for consistency)
+                self.task_claimed_at = claim_time.replace(tzinfo=None)
+                self.task_deadline = deadline_time.replace(tzinfo=None)
                 self.deadline_warning_sent = False
                 self.deadline_final_warning_sent = False
                 
@@ -577,12 +603,25 @@ class TaskFluxBot:
                 task_info += f"⏳ Time Left: {hours_left:.1f}h"
                 
                 # HIGHEST PRIORITY - Task assignment is most critical
-                self.send_notification(
+                success = self.send_notification(
                     "Task Assigned",
                     task_info,
                     priority="urgent",
-                    tags="dart"
+                    tags="dart",
+                    delay_after=1.5  # 1.5 second delay after this critical notification
                 )
+                
+                if not success:
+                    print(f"⚠️ Failed to send 'Task Assigned' notification, retrying once...")
+                    time.sleep(2)
+                    self.send_notification(
+                        "Task Assigned",
+                        task_info,
+                        priority="urgent",
+                        tags="dart",
+                        delay_after=1.5
+                    )
+                
                 return True
             elif response.status_code == 400:
                 # Task not available to claim (already assigned, invalid status, etc.)
@@ -718,39 +757,63 @@ class TaskFluxBot:
                 # If cooldown is detected (can't claim), task was submitted!
                 if not can_claim and allowed_after:
                     print(f"✅ Cooldown detected on server - Task was submitted!")
+                    print(f"🎉 Task submission confirmed!")
                     
-                    # Step 1: Send "Task Submitted" notification first
+                    # Step 1: Get task summary for total amount
                     task_summary = self.get_task_summary()
                     total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
+                    print(f"💰 Total Amount: ${total_amount}")
                     
-                    self.send_notification(
+                    # Step 2: Send "Task Submitted" notification
+                    success = self.send_notification(
                         "Task Submitted",
                         f"🎯 ${total_amount}",
                         priority="high",
-                        tags="dart"
+                        tags="dart",
+                        delay_after=2.0  # 2 second delay after this notification
                     )
                     
-                    print(f"🎉 Task submission confirmed!")
-                    print(f"💰 Total Amount: ${total_amount}")
+                    if not success:
+                        print(f"⚠️ Failed to send 'Task Submitted' notification, retrying...")
+                        time.sleep(2)
+                        self.send_notification(
+                            "Task Submitted",
+                            f"🎯 ${total_amount}",
+                            priority="high",
+                            tags="dart",
+                            delay_after=2.0
+                        )
                     
-                    # Step 2: Wait 30 seconds
-                    print(f"⏳ Waiting 30 seconds before syncing cooldown...")
-                    time.sleep(30)
+                    # Step 3: Wait before syncing cooldown
+                    print(f"⏳ Waiting 10 seconds before syncing cooldown...")
+                    time.sleep(10)
                     
-                    # Step 3: Sync cooldown from server (this will save it locally)
+                    # Step 4: Sync cooldown from server (this will save it locally)
                     print(f"🔄 Syncing cooldown from server...")
                     self.sync_cooldown_from_server()
                     
-                    # Step 4: Send cooldown notification
+                    # Step 5: Send cooldown notification
                     remaining = self.get_cooldown_remaining()
                     hours = remaining.total_seconds() / 3600 if remaining else 0
                     
-                    self.send_notification(
+                    success = self.send_notification(
                         "Cooldown Started",
                         f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
                         priority="default",
-                        tags="hourglass"
+                        tags="hourglass",
+                        delay_after=1.0
                     )
+                    
+                    if not success:
+                        print(f"⚠️ Failed to send 'Cooldown Started' notification, retrying...")
+                        time.sleep(2)
+                        self.send_notification(
+                            "Cooldown Started",
+                            f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                            priority="default",
+                            tags="hourglass",
+                            delay_after=1.0
+                        )
                     
                     print(f"⏰ Cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
                     
@@ -781,14 +844,9 @@ class TaskFluxBot:
         if not self.task_deadline:
             return  # No active task
         
-        ist = pytz.timezone('Asia/Kolkata')
-        now = datetime.now(ist)
-        
-        # Make sure both are timezone-aware for comparison
-        if self.task_deadline.tzinfo is None:
-            task_deadline = ist.localize(self.task_deadline)
-        else:
-            task_deadline = self.task_deadline
+        # Use naive datetime for consistency (all stored datetimes are naive)
+        now = datetime.now()
+        task_deadline = self.task_deadline
         
         time_remaining = task_deadline - now
         hours_remaining = time_remaining.total_seconds() / 3600
@@ -1139,16 +1197,9 @@ class TaskFluxBot:
         if self.task_claimed_at or self.task_deadline:
             # We have local tracking of a task
             if self.task_deadline:
-                # Make sure we use timezone-aware comparison
-                if self.task_deadline.tzinfo is None:
-                    # task_deadline is naive, make it aware (IST)
-                    ist = pytz.timezone('Asia/Kolkata')
-                    task_deadline_aware = ist.localize(self.task_deadline)
-                else:
-                    task_deadline_aware = self.task_deadline
-                
-                now_aware = datetime.now(pytz.timezone('Asia/Kolkata'))
-                time_remaining = task_deadline_aware - now_aware
+                # Use naive datetime for comparison (stored deadline is naive)
+                now = datetime.now()
+                time_remaining = self.task_deadline - now
             else:
                 time_remaining = timedelta(0)
                 
@@ -1275,96 +1326,38 @@ class TaskFluxBot:
             return False
         
         # ═══════════════════════════════════════════════════════════
-        # CLAIM IMMEDIATELY - Don't wait!
-        # If more than 2 claimable tasks, claim up to MAX_TASKS at same time
-        # Speed is CRITICAL - use concurrent requests for maximum speed
+        # CLAIM THE FIRST SAFE TASK IMMEDIATELY
+        # Speed is CRITICAL - claim as fast as possible!
         # ═══════════════════════════════════════════════════════════
-        num_claimable = len(claimable_tasks)
+        print(f"🎯 CLAIMING FIRST SAFE TASK IMMEDIATELY...")
         
-        if num_claimable > 2:
-            # Claim up to MAX_TASKS tasks CONCURRENTLY for maximum speed
-            tasks_to_claim = min(self.max_tasks, num_claimable)
-            print(f"🎯 CLAIMING {tasks_to_claim} TASKS CONCURRENTLY (more than 2 available, MAX_TASKS={self.max_tasks})...")
-            
-            # Prepare tasks to claim
-            tasks_list = []
-            for i in range(tasks_to_claim):
-                task = claimable_tasks[i]
-                task_id = task.get('_id') or task.get('id') or task.get('taskId')
-                if task_id:
-                    tasks_list.append((task_id, task))
-            
-            # Claim all tasks CONCURRENTLY using ThreadPoolExecutor
-            claimed_count = 0
-            failed_count = 0
-            
-            with ThreadPoolExecutor(max_workers=tasks_to_claim) as executor:
-                # Submit all claim requests simultaneously
-                future_to_task = {
-                    executor.submit(self.claim_task, task_id, task_details): (i+1, task_id) 
-                    for i, (task_id, task_details) in enumerate(tasks_list)
-                }
-                
-                # Collect results as they complete
-                for future in as_completed(future_to_task):
-                    task_num, task_id = future_to_task[future]
-                    try:
-                        claimed = future.result()
-                        if claimed:
-                            claimed_count += 1
-                            print(f"✅ Task {task_num}/{tasks_to_claim} claimed successfully! (ID: {task_id[:8]}...)")
-                        else:
-                            failed_count += 1
-                            print(f"❌ Failed to claim task {task_num}/{tasks_to_claim} (ID: {task_id[:8]}...)")
-                    except Exception as e:
-                        failed_count += 1
-                        print(f"❌ Error claiming task {task_num}/{tasks_to_claim}: {e}")
-        else:
-            # Claim only 1 task (2 or fewer available)
-            tasks_to_claim = 1
-            print(f"🎯 CLAIMING FIRST SAFE TASK IMMEDIATELY...")
-            
-            claimed_count = 0
-            failed_count = 0
-            
-            task = claimable_tasks[0]
-            task_id = task.get('_id') or task.get('id') or task.get('taskId')
-            
-            if not task_id:
-                print(f"❌ No task ID found!")
-                return False
-            
-            # Claim the task (speed is critical!)
-            claimed = self.claim_task(task_id, task_details=task)
-            
-            if claimed:
-                claimed_count = 1
-                print(f"✅ Task claimed successfully!")
-            else:
-                failed_count = 1
-                print(f"❌ Failed to claim task")
+        task = claimable_tasks[0]
+        task_id = task.get('_id') or task.get('id') or task.get('taskId')
         
-        if claimed_count == 0:
-            print(f"❌ Failed to claim any tasks")
+        if not task_id:
+            print(f"❌ No task ID found!")
             return False
         
-        # NOW send summary notification after claiming
-        print(f"\n📊 TASK SUMMARY:")
+        # Claim the task (speed is critical!)
+        claimed = self.claim_task(task_id, task_details=task)
+        
+        if not claimed:
+            print(f"❌ Failed to claim task")
+            return False
+        
+        # Task claimed successfully!
+        print(f"✅ Task claimed successfully!")
         print(f"   Total tasks found: {len(tasks)}")
         print(f"   Claimable: {len(claimable_tasks)}")
         print(f"   Rejected: {len(rejected_tasks)}")
-        print(f"   Claimed: ✅ {claimed_count}")
-        if failed_count > 0:
-            print(f"   Failed: ❌ {failed_count}")
+        print(f"   Claimed: ✅ 1")
         
         # Send single summary notification AFTER claiming
         summary_msg = f"📊 Task Check Summary\n\n"
         summary_msg += f"🔍 Total Found: {len(tasks)}\n"
         summary_msg += f"✅ Claimable: {len(claimable_tasks)}\n"
         summary_msg += f"🚫 Rejected: {len(rejected_tasks)}\n"
-        summary_msg += f"🎯 Claimed: {claimed_count}"
-        if failed_count > 0:
-            summary_msg += f"\n❌ Failed: {failed_count}"
+        summary_msg += f"🎯 Claimed: 1"
         summary_msg += f"\n\nTask details sent separately!"
         
         self.send_notification(
@@ -1407,16 +1400,9 @@ class TaskFluxBot:
                     if has_assigned_task:
                         # Task is assigned - monitor it and skip everything else
                         if self.task_deadline:
-                            # Make sure we use timezone-aware comparison
-                            if self.task_deadline.tzinfo is None:
-                                # task_deadline is naive, make it aware (IST)
-                                ist = pytz.timezone('Asia/Kolkata')
-                                task_deadline_aware = ist.localize(self.task_deadline)
-                            else:
-                                task_deadline_aware = self.task_deadline
-                            
-                            now_aware = datetime.now(pytz.timezone('Asia/Kolkata'))
-                            time_remaining = task_deadline_aware - now_aware
+                            # Use naive datetime for comparison (stored deadline is naive)
+                            now = datetime.now()
+                            time_remaining = self.task_deadline - now
                             hours_remaining = time_remaining.total_seconds() / 3600
                             
                             if hours_remaining > 0:
@@ -1716,11 +1702,11 @@ class TaskFluxBot:
                     claimed = self.check_and_claim_tasks()
                     
                     if claimed:
-                        # Task claimed! Now wait for task monitoring
+                        # Task claimed! Start monitoring immediately
                         print(f"\n✅ Task claimed successfully!")
-                        print(f"⏰ Switching to task monitoring mode (2-minute checks)")
+                        print(f"⏰ Switching to task monitoring mode (will check status immediately)")
                         print(f"{'='*60}")
-                        time.sleep(120)  # Wait 2 minutes before first check
+                        time.sleep(3)  # Short 3-second delay before first check
                         continue
                     
                     # No task claimed - it could be:

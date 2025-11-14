@@ -1,6 +1,6 @@
 # 🤖 TaskFlux Bot
 
-**Automated TaskFlux bot with 3-second task detection, deadline tracking, and mobile notifications.**
+**Automated TaskFlux bot with smart cooldown monitoring, time-based claiming (8 AM - 11 PM IST), auto-retry login, and comprehensive mobile notifications via ntfy.sh.**
 
 ---
 
@@ -16,17 +16,12 @@ pip install -r requirements.txt
 EMAIL=your_email@gmail.com
 PASSWORD=your_taskflux_password
 NTFY_URL=https://ntfy.sh/your_unique_topic
-MAX_TASKS=5
 ```
 
 **Environment Variables:**
 - `EMAIL`: Your TaskFlux account email
 - `PASSWORD`: Your TaskFlux password
-- `NTFY_URL`: Your ntfy notification URL
-- `MAX_TASKS`: Max tasks to claim when >2 available (default: 1, range: 1-10)
-  - Not set or `MAX_TASKS=1` → Conservative (1 task when >2 available)
-  - `MAX_TASKS=5` → Aggressive (5 tasks concurrently for speed)
-  - `MAX_TASKS=10` → Maximum (10 tasks, may hit rate limits)
+- `NTFY_URL`: Your ntfy notification URL (for mobile alerts)
 
 ### 3. Setup Mobile Notifications
 - Install [ntfy app](https://ntfy.sh) (Android/iOS)
@@ -42,58 +37,69 @@ python taskflux_bot.py
 
 ## ⚡ Key Features
 
-**Speed**
+**Speed & Reliability**
 - 🔥 3-second task checking (claims before others)
-- ⚡ Concurrent claiming (up to MAX_TASKS at once)
-- 💨 Sub-second multi-task claiming
-- 🚀 Thread-based parallel requests
+- 🔄 Auto-retry with 3 attempts on failures
+- 🌐 30-second timeouts for stability
+- 💾 Persistent state (`cooldown.json`)
 
 **Intelligence**
 - 🛡️ Content safety filtering (80+ patterns)
 - 🎯 Reddit tasks only (Comment/Reply)
 - 🔄 Server-synced cooldown (24h)
-- 💾 Persistent state (`cooldown.json`)
+- 🕐 Active hours: 8 AM - 11 PM IST only
 
-**Tracking**
+**Tracking & Alerts**
 - ⏰ 6-hour deadline monitoring
-- 🚨 Warnings at 2h & 30min
+- 🚨 Deadline warnings: 2h & 30min
 - 💰 Total earnings display
 - 📱 Mobile push notifications
+- ⏱️ Smart cooldown alerts: 1h, 10min, 5min, 2min
 
 ---
 
 ## 📱 Notifications
 
-| Emoji | Event | Priority |
-|-------|-------|----------|
-| 🟢 | Bot online | - |
-| 📋 | Task assigned | 🔴 |
-| ✅ | Task submitted | ⚠️ |
-| ⏱️ | Cooldown active | - |
-| ⏰ | Deadline warning | ⚠️ |
-| 🚨 | 30min left | 🔴 |
-| ❌ | Deadline missed | 🔴 |
-| 🟢 | Ready to claim | ⚠️ |
-| 🔴 | Bot stopped | - |
+| Emoji | Event | Priority | When |
+|-------|-------|----------|------|
+| 🤖 | Bot Started | Default | On login |
+| ❌ | Login Failed | 🔴 URGENT | After 3 failed attempts |
+| 🟢 | Bot Ready | ⚠️ HIGH | Ready to claim |
+| 🎯 | Task Assigned | 🔴 URGENT | Task claimed |
+| ⏰ | 2 Hours Left | ⚠️ HIGH | 2h before deadline |
+| 🔥 | 30 Minutes Left | 🔴 URGENT | 30min before deadline |
+| ✅ | Task Submitted | ⚠️ HIGH | Task completed |
+| ⏱️ | Cooldown Started | Default | After submission |
+| ⏰ | 1 Hour Left | ⚠️ HIGH | 1h before cooldown ends |
+| ⏰ | 10 Minutes Left | ⚠️ HIGH | 10min before cooldown ends |
+| 🔔 | 5 Minutes Left | ⚠️ HIGH | 5min before cooldown ends |
+| 🔥 | Cooldown Ending | 🔴 URGENT | 2min before cooldown ends |
+| 😴 | Off-Hours Sleep | Default | Outside 8 AM-11 PM |
+| ☀️ | Bot Awake | ⚠️ HIGH | At 8 AM IST |
+| ⚠️ | Bot Error | ⚠️ HIGH | Error occurred |
+| 💥 | Bot Crashed | 🔴 URGENT | Critical failure |
+| 🛑 | Bot Stopped | Default | Manual stop |
+
+**Total: 17+ notification types for complete monitoring!**
 
 ---
 
 ## 🔄 How It Works
 
 ```
-Login → Check Assigned Task → Monitor (60s checks)
-   ↓                              ↓
-Sync Cooldown → Sleep 24h    Task Done
-   ↓                              ↓
-Check Tasks (3s) → Filter → Claim (1-5 tasks) → Monitor → Loop
+Login → Check Current State (assigned task or cooldown)
+   ↓
+   ├─ Has assigned task? → Monitor every 2 minutes → Task submitted → Cooldown starts
+   ├─ In cooldown? → Smart sleep with alerts (1h, 10min, 5min, 2min)
+   └─ Ready to claim? → Check if 8 AM - 11 PM → Search and claim task
                               ↓
-                    >2 tasks? Claim MAX_TASKS concurrently
-                    ≤2 tasks? Claim 1 task
+                        Outside hours? Sleep until 8 AM
 ```
 
-**Multi-Task Claiming:** When >2 tasks available, claims up to MAX_TASKS simultaneously  
+**Time-Based Claiming:** Only searches for tasks between 8 AM - 11 PM IST  
+**Smart Wake-Up:** Calculates sleep to wake before each alert threshold  
 **Completion Detection:** Monitors cooldown endpoint = task submitted  
-**Earnings Tracking:** Fetches from `/api/tasks/task-summary`
+**Auto-Retry:** 3 login attempts with 30-second timeout
 
 ---
 
@@ -135,15 +141,18 @@ run_bot.bat          # Windows launcher
 ## ⚙️ Technical Details
 
 **Check Intervals:**
-- Task checking: 3 seconds (fixed)
-- Task monitoring: 60 seconds (when assigned)
-- Cooldown sleep: 24 hours (full duration)
+- Task searching: Every cooldown cycle (24 hours)
+- Task monitoring: 2 minutes (when assigned)
+- Cooldown sync: 3 seconds (verifying status)
 
-**Multi-Task Claiming:**
-- Threshold: >2 available tasks triggers multi-claim
-- Max concurrent: Configurable via MAX_TASKS (default: 1)
-- Speed: All claims sent simultaneously via ThreadPoolExecutor
-- Safety limit: 1-10 tasks maximum
+**Smart Wake-Up System:**
+- Calculates next alert time (1h, 10min, 5min, 2min before cooldown ends)
+- Sleeps until alert time instead of full duration
+- Ensures timely notifications without constant checking
+
+**Active Hours:**
+- Claims tasks only between 8 AM - 11 PM IST
+- Sleeps during off-hours, wakes at 8 AM
 
 **Timezone:** All times in IST (Asia/Kolkata)
 
@@ -167,20 +176,17 @@ run_bot.bat          # Windows launcher
 ```
 🔐 Logging in...
 ✅ Login successful!
+🤖 Bot started successfully!
 
-🔄 Check #1 at 05:54 PM
+🔄 Checking current state...
+✅ No assigned task, no active cooldown
+
 🔍 Checking for tasks...
-📋 Found 6 tasks
-🎯 CLAIMING 5 TASKS CONCURRENTLY (more than 3 available, MAX_TASKS=5)...
-
-✅ Task 1/5 claimed successfully!
-✅ Task 2/5 claimed successfully!
-✅ Task 3/5 claimed successfully!
-✅ Task 4/5 claimed successfully!
-✅ Task 5/5 claimed successfully!
+📋 Found 3 tasks
+🎯 Claiming task: RedditCommentTask ($2.00)
 
 ════════════════════════════════════
-🎯 TASK DETAILS (Task 1)
+🎯 TASK ASSIGNED
 ════════════════════════════════════
 📋 RedditCommentTask
 💰 $2.00
@@ -188,12 +194,21 @@ run_bot.bat          # Windows launcher
 📍 r/AskReddit
 ════════════════════════════════════
 
-(5 tasks claimed in ~1 second!)
-(Monitoring every 60s...)
+(Monitoring every 2 minutes...)
 
-✅ Tasks submitted!
-💰 Total: $33.00
-⏱️ Cooldown: 24h
+⏰ 2 hours left until deadline!
+
+✅ Task submitted detected!
+💰 Earned: $2.00
+⏱️ Cooldown started: 24 hours
+
+⏰ 1 hour left in cooldown
+⏰ 10 minutes left in cooldown
+🔔 5 minutes left in cooldown
+🔥 Cooldown ending in 2 minutes!
+
+🟢 Cooldown ended! Ready to claim next task.
+```
 ```
 
 ---
@@ -207,9 +222,9 @@ run_bot.bat          # Windows launcher
 
 ---
 
-**Version:** 2.3  
-**Updated:** Nov 8, 2025  
-**Status:** ✅ Production Ready
+**Version:** 3.0  
+**Updated:** January 2025  
+**Status:** ✅ Production Ready (with hosting-grade error notifications)
 
 ---
 

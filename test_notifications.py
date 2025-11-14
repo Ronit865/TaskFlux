@@ -81,142 +81,191 @@ class NotificationTester:
         print("Check your ntfy client after each notification.\n")
         
         tests = [
+            # === LOGIN & STARTUP ===
             {
                 "name": "1. Bot Started",
                 "title": "Bot Started",
-                "message": f"🧑‍💻 test@example.com",
+                "message": f"🧑‍💻 {os.getenv('EMAIL', 'test@example.com')}",
                 "priority": "default",
                 "tags": "robot"
             },
             {
-                "name": "2. Bot Ready",
+                "name": "2. Login Failed (HTTP Error)",
+                "title": "Login Failed",
+                "message": f"❌ HTTP 401\n🔄 All 3 attempts failed",
+                "priority": "urgent",
+                "tags": "x"
+            },
+            {
+                "name": "3. Login Timeout",
+                "title": "Login Timeout",
+                "message": f"❌ Server not responding\n🔄 All 3 attempts failed",
+                "priority": "urgent",
+                "tags": "x"
+            },
+            {
+                "name": "4. Login Error",
+                "title": "Login Error",
+                "message": f"❌ Connection failed\n🔄 All 3 attempts failed",
+                "priority": "urgent",
+                "tags": "x"
+            },
+            {
+                "name": "5. Bot Ready",
                 "title": "Bot Ready",
-                "message": f"🟢 Ready\n🕐 {current_time.strftime('%I:%M %p IST')}",
+                "message": f"🟢 Searching\n🕐 {current_time.strftime('%I:%M %p IST')}",
                 "priority": "high",
                 "tags": "green_circle"
             },
+            
+            # === TASK CLAIMING ===
             {
-                "name": "3. Cooldown Active",
-                "title": "Cooldown Active",
-                "message": f"⌛ 2.5h left\n⏰ {cooldown_time.strftime('%I:%M %p IST')}",
-                "priority": "default",
-                "tags": "hourglass"
-            },
-            {
-                "name": "4. Cooldown Ending (10 min)",
-                "title": "10 Minutes Left",
-                "message": f"⏰ 10min\n🕐 {current_time.strftime('%I:%M %p IST')}",
-                "priority": "high",
-                "tags": "alarm_clock"
-            },
-            {
-                "name": "5. Cooldown Ending Soon",
-                "title": "Cooldown Ending",
-                "message": f"⏰ 5min\n🕐 {current_time.strftime('%I:%M %p IST')}",
-                "priority": "high",
-                "tags": "bell"
-            },
-            {
-                "name": "6. Ready (Cooldown Ended)",
-                "title": "Ready",
-                "message": "🔥 Cooldown ended",
-                "priority": "high",
-                "tags": "robot"
-            },
-            {
-                "name": "7. No Claimable Tasks",
-                "title": "No Claimable Tasks",
-                "message": "🔍 3 found\n🚫 All rejected\n\n• Wrong type: 2\n• Unsafe content: 1\n\n⏱️ Retry in 3s",
-                "priority": "low",
-                "tags": "mag"
-            },
-            {
-                "name": "8. Task Check Summary",
-                "title": "Task Check Summary",
-                "message": "📊 Task Check Summary\n\n🔍 Total Found: 3\n✅ Claimable: 2\n🚫 Rejected: 1\n🎯 Claimed: 1\n\nTask details sent separately!",
-                "priority": "default",
-                "tags": "clipboard"
-            },
-            {
-                "name": "9. Task Assigned (URGENT)",
+                "name": "6. Task Assigned",
                 "title": "Task Assigned",
-                "message": f"🎯 Type: REDDITCOMMENTTASK\n💵 Price: $2.00\n⏰ Deadline: {future_time.strftime('%I:%M %p IST')}\n⏳ Time Left: 6.0h",
+                "message": f"🎯 REDDITCOMMENTTASK\n💵 $2.00\n⏰ {future_time.strftime('%I:%M %p IST')}\n⏳ Time Left: 6.0h",
                 "priority": "urgent",
                 "tags": "dart"
             },
             {
-                "name": "10. Assigned Task Found",
+                "name": "7. Assigned Task Found",
                 "title": "Assigned Task Found",
                 "message": f"📋 RedditCommentTask\n💵 $2.00\n🕐 {future_time.strftime('%I:%M %p IST')}\n⏳ 5.2h left",
                 "priority": "urgent",
                 "tags": "pushpin"
             },
             {
-                "name": "11. 2 Hours Left Warning",
+                "name": "8. Task Check Summary",
+                "title": "Task Check Summary",
+                "message": f"📊 Task Check Summary\n\n🔍 Total Found: 5\n✅ Claimable: 3\n🚫 Rejected: 2\n🎯 Claimed: 1\n\nTask details sent separately!",
+                "priority": "default",
+                "tags": "clipboard"
+            },
+            {
+                "name": "9. No Claimable Tasks",
+                "title": "No Claimable Tasks",
+                "message": f"🔍 3 found\n🚫 All rejected\n\n• Wrong task type: 2\n• Unsafe content: 1\n\n⏱️ Retry in 3s",
+                "priority": "low",
+                "tags": "mag"
+            },
+            
+            # === TASK DEADLINE WARNINGS ===
+            {
+                "name": "10. 2 Hours Left",
                 "title": "2 Hours Left",
                 "message": f"⚠️ 2.0h\n🕐 {future_time.strftime('%I:%M %p IST')}",
                 "priority": "high",
                 "tags": "warning"
             },
             {
-                "name": "12. 30 Minutes Left (URGENT)",
+                "name": "11. 30 Minutes Left",
                 "title": "30 Minutes Left",
                 "message": f"🚨 30min\n🕐 {future_time.strftime('%I:%M %p IST')}",
                 "priority": "urgent",
                 "tags": "fire"
             },
             {
-                "name": "13. Deadline Exceeded",
+                "name": "12. Deadline Exceeded",
                 "title": "Deadline Exceeded",
                 "message": f"⛔ {future_time.strftime('%I:%M %p IST')}",
                 "priority": "urgent",
                 "tags": "no_entry"
             },
             {
-                "name": "14. Task Deadline Passed",
+                "name": "13. Task Deadline Passed",
                 "title": "Task Deadline Passed",
                 "message": f"⛔ RedditCommentTask\n💵 $2.00\n🕐 {future_time.strftime('%I:%M %p IST')}",
                 "priority": "urgent",
                 "tags": "no_entry"
             },
+            
+            # === TASK COMPLETION ===
             {
-                "name": "15. Task Submitted",
+                "name": "14. Task Submitted",
                 "title": "Task Submitted",
-                "message": "🎯 $2.00",
+                "message": f"🎯 $2.00",
                 "priority": "high",
                 "tags": "dart"
             },
+            
+            # === COOLDOWN MONITORING ===
             {
-                "name": "16. Cooldown Started",
+                "name": "15. Cooldown Started",
                 "title": "Cooldown Started",
                 "message": f"⌛ 24h\n🕐 {cooldown_time.strftime('%I:%M %p IST')}",
                 "priority": "default",
                 "tags": "hourglass"
             },
             {
-                "name": "17. Bot Sleeping",
-                "title": "Bot Sleeping",
-                "message": f"😴 8.5h\n⏰ Resume: 08:00 AM IST",
+                "name": "16. Cooldown Active",
+                "title": "Cooldown Active",
+                "message": f"⌛ 23.5h\n🕐 {cooldown_time.strftime('%I:%M %p IST')}",
+                "priority": "default",
+                "tags": "hourglass"
+            },
+            {
+                "name": "17. 1 Hour Left",
+                "title": "1 Hour Left",
+                "message": f"⏰ 60min\n🕐 {cooldown_time.strftime('%I:%M %p IST')}",
+                "priority": "high",
+                "tags": "alarm_clock"
+            },
+            {
+                "name": "18. 10 Minutes Left",
+                "title": "10 Minutes Left",
+                "message": f"⏰ 10min\n🕐 {cooldown_time.strftime('%I:%M %p IST')}",
+                "priority": "high",
+                "tags": "alarm_clock"
+            },
+            {
+                "name": "19. 5 Minutes Left",
+                "title": "5 Minutes Left",
+                "message": f"⏰ 5min\n🕐 {cooldown_time.strftime('%I:%M %p IST')}",
+                "priority": "high",
+                "tags": "bell"
+            },
+            {
+                "name": "20. Cooldown Ending",
+                "title": "Cooldown Ending",
+                "message": f"🔥 2min\n🕐 {cooldown_time.strftime('%I:%M %p IST')}",
+                "priority": "urgent",
+                "tags": "fire"
+            },
+            
+            # === TIME-BASED OPERATIONS ===
+            {
+                "name": "21. Off-Hours Sleep",
+                "title": "Off-Hours Sleep",
+                "message": f"😴 8.5h\n⏰ 08:00 AM IST\n🕐 Claiming: 8 AM - 11 PM",
                 "priority": "default",
                 "tags": "zzz"
             },
             {
-                "name": "18. Bot Awake",
+                "name": "22. Bot Awake",
                 "title": "Bot Awake",
-                "message": f"☀️ Ready to claim!\n🕐 08:00 AM IST",
+                "message": f"☀️ Ready!\n🕐 08:00 AM IST",
                 "priority": "high",
                 "tags": "sunny"
             },
+            
+            # === ERROR & SYSTEM ===
             {
-                "name": "19. Bot Stopped",
+                "name": "23. Bot Stopped",
                 "title": "Bot Stopped",
-                "message": "💀 Stopped",
+                "message": f"💀 Stopped\n🕐 {current_time.strftime('%I:%M %p IST')}",
                 "priority": "default",
                 "tags": "robot"
+            },
+            {
+                "name": "24. Bot Crashed",
+                "title": "Bot Crashed",
+                "message": f"💥 Critical Error\n⚠️ Connection timeout\n🕐 {current_time.strftime('%I:%M %p IST')}",
+                "priority": "urgent",
+                "tags": "x"
             }
         ]
         
         print(f"📤 Sending {len(tests)} test notifications...\n")
+        print("⏳ This will take ~50 seconds (2 seconds between each notification)\n")
         
         success_count = 0
         for i, test in enumerate(tests, 1):
@@ -296,6 +345,59 @@ class NotificationTester:
         
         print("\n✅ All priority levels sent!")
         print("📱 Check your ntfy client to see the differences!\n")
+    
+    def test_cooldown_alerts(self):
+        """Test cooldown alert notifications"""
+        print("\n" + "="*70)
+        print("🧪 TESTING COOLDOWN ALERTS")
+        print("="*70)
+        print("\nThis will send all 5 cooldown-related notifications.\n")
+        
+        ist = pytz.timezone('Asia/Kolkata')
+        current_time = datetime.now(ist)
+        cooldown_end = current_time + timedelta(hours=1)
+        
+        alerts = [
+            {
+                "title": "Cooldown Started",
+                "message": f"⌛ 24h\n🕐 {cooldown_end.strftime('%I:%M %p IST')}",
+                "priority": "default"
+            },
+            {
+                "title": "1 Hour Left",
+                "message": f"⏰ 60min\n🕐 {cooldown_end.strftime('%I:%M %p IST')}",
+                "priority": "high"
+            },
+            {
+                "title": "10 Minutes Left",
+                "message": f"⏰ 10min\n🕐 {cooldown_end.strftime('%I:%M %p IST')}",
+                "priority": "high"
+            },
+            {
+                "title": "5 Minutes Left",
+                "message": f"⏰ 5min\n🕐 {cooldown_end.strftime('%I:%M %p IST')}",
+                "priority": "high"
+            },
+            {
+                "title": "Cooldown Ending",
+                "message": f"🔥 2min\n🕐 {cooldown_end.strftime('%I:%M %p IST')}",
+                "priority": "urgent"
+            }
+        ]
+        
+        for i, alert in enumerate(alerts, 1):
+            print(f"\n{i}/5: Sending {alert['title']} ({alert['priority'].upper()})...")
+            self.send_notification(
+                alert['title'],
+                alert['message'],
+                alert['priority'],
+                "alarm_clock"
+            )
+            if i < len(alerts):
+                time.sleep(2)
+        
+        print("\n✅ All cooldown alerts sent!")
+        print("📱 Check your ntfy client!\n")
 
 
 def main():
@@ -317,27 +419,30 @@ def main():
         print("📋 TEST MENU")
         print("="*70)
         print("\n1. Test Single Notification")
-        print("2. Test All Notification Types (19 notifications)")
+        print("2. Test All Notification Types (24 notifications)")
         print("3. Test Priority Levels (5 notifications)")
-        print("4. Exit")
+        print("4. Test Cooldown Alerts Only (5 notifications)")
+        print("5. Exit")
         print("\n" + "="*70)
         
-        choice = input("\n👉 Enter your choice (1-4): ").strip()
+        choice = input("\n👉 Enter your choice (1-5): ").strip()
         
         if choice == "1":
             tester.test_single_notification()
         elif choice == "2":
-            print("\n⚠️ This will send 19 notifications over ~40 seconds.")
+            print("\n⚠️ This will send 24 notifications over ~50 seconds.")
             confirm = input("Continue? (y/n): ").strip().lower()
             if confirm == 'y':
                 tester.test_all_notifications()
         elif choice == "3":
             tester.test_priority_levels()
         elif choice == "4":
+            tester.test_cooldown_alerts()
+        elif choice == "5":
             print("\n👋 Goodbye!\n")
             break
         else:
-            print("\n❌ Invalid choice. Please enter 1-4.")
+            print("\n❌ Invalid choice. Please enter 1-5.")
 
 
 if __name__ == "__main__":

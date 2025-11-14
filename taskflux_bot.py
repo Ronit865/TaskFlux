@@ -211,185 +211,132 @@ class TaskFluxBot:
     
     def login(self):
         """Login to TaskFlux"""
-        try:
-            print("\n" + "="*60)
-            print(f"🔐 Logging in as {self.email}...")
-            print("="*60)
-            
-            # Actual TaskFlux login endpoint
-            login_url = f"{self.base_url}/api/users/login"
-            
-            payload = {
-                "email": self.email,
-                "password": self.password
-            }
-            
-            response = self.session.post(login_url, json=payload)
-            
-            if response.status_code == 200:
-                # TaskFlux uses cookie-based authentication (accessToken cookie)
-                # The session automatically handles cookies, no need to manually set headers
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                print("\n" + "="*60)
+                print(f"🔐 Logging in as {self.email}... (Attempt {attempt + 1}/{max_retries})")
+                print("="*60)
                 
-                # Try to get user data from response
-                user_data = None
-                has_assigned_task = False
-                try:
-                    data = response.json()
-                    if 'user' in data:
-                        user_data = data['user']
-                        self.user_id = user_data.get('_id') or user_data.get('id')
+                # Actual TaskFlux login endpoint
+                login_url = f"{self.base_url}/api/users/login"
+                
+                payload = {
+                    "email": self.email,
+                    "password": self.password
+                }
+                
+                response = self.session.post(login_url, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    # TaskFlux uses cookie-based authentication (accessToken cookie)
+                    # The session automatically handles cookies, no need to manually set headers
+                    
+                    # Try to get user data from response
+                    user_data = None
+                    try:
+                        data = response.json()
+                        if 'user' in data:
+                            user_data = data['user']
+                            self.user_id = user_data.get('_id') or user_data.get('id')
+                        elif '_id' in data:
+                            self.user_id = data.get('_id')
+                            user_data = data
+                    except:
+                        pass
+                    
+                    print(f"✅ Login successful!")
+                    
+                    # Get IST time
+                    ist = pytz.timezone('Asia/Kolkata')
+                    current_ist = datetime.now(ist)
+                    
+                    self.send_notification(
+                        "Bot Started",
+                        f"🧑‍💻 {self.email}",
+                        priority="default",
+                        tags="robot"
+                    )
+                    return True
+                else:
+                    print(f"❌ Login failed: {response.status_code}")
+                    print(f"Response: {response.text}")
+                    if attempt == max_retries - 1:
+                        # Send critical failure notification
+                        self.send_notification(
+                            "Login Failed",
+                            f"❌ HTTP {response.status_code}\n🔄 All {max_retries} attempts failed",
+                            priority="urgent",
+                            tags="x"
+                        )
+                        return False
+                    time.sleep(5)
                         
-                        # Check if user has assigned task in login response
-                        assigned_task = user_data.get('assignedTask') or user_data.get('currentTask')
-                        if assigned_task:
-                            has_assigned_task = True
-                            
-                            # Try to extract task details
-                            task_id = assigned_task.get('id') or assigned_task.get('_id', 'unknown')
-                            task_type = assigned_task.get('type', 'N/A')
-                            created_at = assigned_task.get('createdAt') or assigned_task.get('claimedAt')
-                            
-                            # Set up deadline tracking if we have creation time
-                            if created_at:
-                                try:
-                                    ist = pytz.timezone('Asia/Kolkata')
-                                    claimed_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                                    
-                                    if claimed_time.tzinfo:
-                                        claimed_time_ist = claimed_time.astimezone(ist)
-                                        claimed_time = claimed_time_ist.replace(tzinfo=None)
-                                    else:
-                                        utc = pytz.UTC
-                                        claimed_time = utc.localize(claimed_time).astimezone(ist).replace(tzinfo=None)
-                                    
-                                    deadline_time = claimed_time + timedelta(hours=6)
-                                    
-                                    self.task_claimed_at = claimed_time
-                                    self.task_deadline = deadline_time
-                                except Exception as e:
-                                    pass
-                    elif '_id' in data:
-                        self.user_id = data.get('_id')
-                        user_data = data
-                except:
-                    # Response might be empty or different format
-                    pass
-                
-                print(f"✅ Login successful!")
-                
-                # Get IST time
-                ist = pytz.timezone('Asia/Kolkata')
-                current_ist = datetime.now(ist)
-                
-                self.send_notification(
-                    "Bot Started",
-                    f"🧑‍💻 {self.email}",
-                    priority="default",
-                    tags="robot"
-                )
-                return True
-            else:
-                print(f"❌ Login failed: {response.status_code}")
-                print(f"Response: {response.text}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Login error: {e}")
-            return False
+            except requests.exceptions.Timeout:
+                print(f"⚠️ Login timeout (attempt {attempt + 1}/{max_retries})")
+                if attempt == max_retries - 1:
+                    self.send_notification(
+                        "Login Timeout",
+                        f"❌ Server not responding\n🔄 All {max_retries} attempts failed",
+                        priority="urgent",
+                        tags="x"
+                    )
+                    return False
+                time.sleep(5)
+                    
+            except Exception as e:
+                print(f"❌ Login error: {e}")
+                if attempt == max_retries - 1:
+                    self.send_notification(
+                        "Login Error",
+                        f"❌ {str(e)[:100]}\n🔄 All {max_retries} attempts failed",
+                        priority="urgent",
+                        tags="x"
+                    )
+                    return False
+                time.sleep(5)
+        
+        return False
     
     def sync_cooldown_from_server(self):
-        """
-        Check server for existing cooldown and sync with local state
-        Returns: True if cooldown is active, False otherwise
-        """
+        """Sync cooldown from server (NO notifications sent here)"""
         try:
-            # Check if we can assign task to self
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
             response = self.session.get(check_url)
             
             if response.status_code == 200:
                 data = response.json()
-                
-                # TaskFlux uses 'default' object for task claim status
                 default_data = data.get('default', {})
-                
-                # Check if we can assign/claim
                 can_claim = default_data.get('canAssign', True)
                 allowed_after = default_data.get('allowedAfter')
-                reason = default_data.get('reason', '')
                 
                 if not can_claim and allowed_after:
-                    # There's an active cooldown - parse the allowedAfter time
-                    try:
-                        # Parse ISO format: '2025-11-06T12:24:19.254Z'
-                        cooldown_end = datetime.fromisoformat(allowed_after.replace('Z', '+00:00'))
-                        
-                        # Convert to IST (Indian Standard Time)
-                        ist = pytz.timezone('Asia/Kolkata')
-                        if cooldown_end.tzinfo:
-                            cooldown_end_ist = cooldown_end.astimezone(ist)
-                            cooldown_end = cooldown_end_ist.replace(tzinfo=None)
-                        else:
-                            # If no timezone, assume UTC and convert to IST
-                            utc = pytz.UTC
-                            cooldown_end = utc.localize(cooldown_end).astimezone(ist).replace(tzinfo=None)
-                        
-                        # Check if this is a new cooldown (not previously tracked)
-                        is_new_cooldown = self.cooldown_end is None or abs((self.cooldown_end - cooldown_end).total_seconds()) > 300
-                        
-                        self.save_cooldown(cooldown_end)
-                        
-                        remaining = cooldown_end - datetime.now()
-                        hours = remaining.total_seconds() / 3600
-                        
-                        # Send notification for new cooldown ONLY if not already being handled by check_task_completion
-                        # We check if we have an active task - if yes, let check_task_completion handle notifications
-                        if is_new_cooldown and not self.task_claimed_at:
-                            self.send_notification(
-                                "Cooldown Active",
-                                f"⌛ {hours:.1f}h left\n⏰ {cooldown_end.strftime('%I:%M %p IST')}",
-                                priority="default",
-                                tags="hourglass",
-                                delay_after=1.0
-                            )
-                            # Mark that we've sent cooldown notification on this startup
-                            self._cooldown_notified_on_startup = True
-                        
-                        return True  # Cooldown is active
-                        
-                    except Exception as e:
-                        print(f"⚠️ Could not parse cooldown time: {e}")
-                        print(f"   allowedAfter value: {allowed_after}")
-                        # Assume 24h from now if we can't parse
-                        cooldown_end = datetime.now() + timedelta(hours=24)
-                        self.save_cooldown(cooldown_end)
-                        print(f"⏰ Server cooldown detected, estimated end: {cooldown_end.strftime('%I:%M %p IST')}")
-                        return True  # Assume cooldown is active
+                    # Parse cooldown time
+                    cooldown_end = datetime.fromisoformat(allowed_after.replace('Z', '+00:00'))
+                    
+                    # Convert to IST
+                    ist = pytz.timezone('Asia/Kolkata')
+                    if cooldown_end.tzinfo:
+                        cooldown_end = cooldown_end.astimezone(ist).replace(tzinfo=None)
+                    else:
+                        utc = pytz.UTC
+                        cooldown_end = utc.localize(cooldown_end).astimezone(ist).replace(tzinfo=None)
+                    
+                    # Save cooldown (no notification)
+                    self.save_cooldown(cooldown_end)
+                    return True
                 else:
                     # No cooldown on server
-                    if self.cooldown_end:
-                        if datetime.now() >= self.cooldown_end:
-                            # Local cooldown expired, clear it
-                            print(f"✅ Cooldown expired, ready to claim!")
-                            self.cooldown_end = None
-                            self.save_cooldown(None)
-                            return False  # No cooldown
-                        else:
-                            # Server says OK but we have local cooldown that hasn't expired
-                            # Trust local cooldown
-                            remaining = self.cooldown_end - datetime.now()
-                            hours = remaining.total_seconds() / 3600
-                            print(f"⏰ Local cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
-                            return True  # Cooldown still active locally
-                    
-                    return False  # No cooldown
-            else:
-                print(f"⚠️ Could not check server cooldown status (HTTP {response.status_code})")
-                return False  # Assume no cooldown if can't check
+                    if self.cooldown_end and datetime.now() >= self.cooldown_end:
+                        self.cooldown_end = None
+                        self.save_cooldown(None)
+                    return False
+            
+            return False
                         
         except Exception as e:
             print(f"⚠️ Error syncing cooldown: {e}")
-            return False  # Assume no cooldown on error
+            return False
     
     def can_claim_task(self):
         """Check if we can claim a task (not in cooldown)"""
@@ -733,18 +680,17 @@ class TaskFluxBot:
     
     def check_task_completion(self):
         """
-        Check if current task has been submitted by checking cooldown on server.
-        Task submission is indicated by cooldown starting on the server.
+        Check if task was submitted by detecting cooldown on server.
+        Sends: 1) Task Submitted notification, 2) Cooldown Started notification
         Returns True if task submitted, False otherwise.
         """
-        # Only check if we have an active task
         if not self.task_claimed_at:
             return False
             
         try:
-            print(f"🔍 Checking task submission status (cooldown detection)...")
+            print(f"🔍 Checking for task submission (cooldown detection)...")
             
-            # Check server for cooldown WITHOUT syncing locally or sending notifications
+            # Check server for cooldown
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
             response = self.session.get(check_url)
             
@@ -754,68 +700,40 @@ class TaskFluxBot:
                 can_claim = default_data.get('canAssign', True)
                 allowed_after = default_data.get('allowedAfter')
                 
-                # If cooldown is detected (can't claim), task was submitted!
+                # If cooldown detected = task was submitted!
                 if not can_claim and allowed_after:
-                    print(f"✅ Cooldown detected on server - Task was submitted!")
-                    print(f"🎉 Task submission confirmed!")
+                    print(f"✅ Cooldown detected - Task was submitted!")
                     
-                    # Step 1: Get task summary for total amount
+                    # Step 1: Get total amount
                     task_summary = self.get_task_summary()
                     total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
-                    print(f"💰 Total Amount: ${total_amount}")
                     
                     # Step 2: Send "Task Submitted" notification
-                    success = self.send_notification(
+                    self.send_notification(
                         "Task Submitted",
                         f"🎯 ${total_amount}",
                         priority="high",
                         tags="dart",
-                        delay_after=2.0  # 2 second delay after this notification
+                        delay_after=2.0
                     )
                     
-                    if not success:
-                        print(f"⚠️ Failed to send 'Task Submitted' notification, retrying...")
-                        time.sleep(2)
-                        self.send_notification(
-                            "Task Submitted",
-                            f"🎯 ${total_amount}",
-                            priority="high",
-                            tags="dart",
-                            delay_after=2.0
-                        )
-                    
                     # Step 3: Wait before syncing cooldown
-                    print(f"⏳ Waiting 10 seconds before syncing cooldown...")
+                    print(f"⏳ Waiting 10s before cooldown notification...")
                     time.sleep(10)
                     
-                    # Step 4: Sync cooldown from server (this will save it locally)
-                    print(f"🔄 Syncing cooldown from server...")
+                    # Step 4: Sync cooldown from server
                     self.sync_cooldown_from_server()
                     
                     # Step 5: Send cooldown notification
                     remaining = self.get_cooldown_remaining()
                     hours = remaining.total_seconds() / 3600 if remaining else 0
                     
-                    success = self.send_notification(
+                    self.send_notification(
                         "Cooldown Started",
                         f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
                         priority="default",
-                        tags="hourglass",
-                        delay_after=1.0
+                        tags="hourglass"
                     )
-                    
-                    if not success:
-                        print(f"⚠️ Failed to send 'Cooldown Started' notification, retrying...")
-                        time.sleep(2)
-                        self.send_notification(
-                            "Cooldown Started",
-                            f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
-                            priority="default",
-                            tags="hourglass",
-                            delay_after=1.0
-                        )
-                    
-                    print(f"⏰ Cooldown: {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
                     
                     # Clear task tracking
                     self.task_claimed_at = None
@@ -825,13 +743,8 @@ class TaskFluxBot:
                     self.current_task_id = None
                     self.current_task_type = None
                     
-                    # Reset assigned task notification flag
-                    if hasattr(self, '_assigned_task_notified'):
-                        self._assigned_task_notified = False
-                    
                     return True
             
-            # No cooldown detected - task still in progress
             print(f"📋 No cooldown detected - task still in progress")
             return False
                     
@@ -1371,22 +1284,23 @@ class TaskFluxBot:
     
     def run(self, check_interval=3):
         """
-        Main bot loop - fixed 3 second checking interval
-        check_interval: seconds between checks (default 3 seconds)
+        Main bot loop with proper flow:
+        1. Login
+        2. Check for assigned task → Monitor with deadline warnings
+        3. Check for cooldown → Sleep with notifications (10min, 5min)
+        4. Check and claim tasks → Send notifications
+        5. Repeat
         """
-        # Set intervals to 3 seconds
-        self.min_check_interval = 3
-        self.max_check_interval = 3
-        
-        self.current_check_interval = 3
-        
         # Initial login
         if not self.login():
             print("❌ Failed to login. Exiting...")
             return
         
-        # Start monitoring loop directly - initial check happens in first loop iteration
         loop_count = 0
+        cooldown_1h_sent = False
+        cooldown_10min_sent = False
+        cooldown_5min_sent = False
+        cooldown_2min_sent = False
         
         try:
             while True:
@@ -1394,211 +1308,86 @@ class TaskFluxBot:
                     loop_count += 1
                     current_time = datetime.now().strftime('%I:%M:%S %p')
                     
-                    # FLOW: 1. Check for assigned task on server
+                    # ═══════════════════════════════════════════════════════════
+                    # STEP 1: Check for assigned task on server
+                    # ═══════════════════════════════════════════════════════════
                     has_assigned_task = self.check_for_assigned_task_on_server()
                     
                     if has_assigned_task:
-                        # Task is assigned - monitor it and skip everything else
+                        # Task is assigned - monitor and send deadline warnings
+                        print(f"\n{'='*60}")
+                        print(f"📋 TASK MONITORING - Check #{loop_count} - {current_time}")
+                        print(f"{'='*60}")
+                        
+                        # Get/update task details if not set
+                        if not self.task_deadline:
+                            self.check_for_running_task(send_notification=(loop_count == 1))
+                        
+                        # Check deadline and send warnings (2h, 30min)
                         if self.task_deadline:
-                            # Use naive datetime for comparison (stored deadline is naive)
-                            now = datetime.now()
-                            time_remaining = self.task_deadline - now
+                            self.check_task_deadline()
+                            time_remaining = self.task_deadline - datetime.now()
                             hours_remaining = time_remaining.total_seconds() / 3600
-                            
-                            if hours_remaining > 0:
-                                print(f"\n{'='*60}")
-                                print(f"⚠️  TASK MONITORING - Check #{loop_count} - {current_time}")
-                                print(f"{'='*60}")
-                                print(f"   Task assigned: {hours_remaining:.1f}h remaining to complete")
-                                print(f"{'='*60}")
-                                
-                                # Send notification on first detection of assigned task
-                                # Use a flag to prevent duplicate notifications
-                                if not hasattr(self, '_assigned_task_notified') or not self._assigned_task_notified:
-                                    self._assigned_task_notified = True
-                                    self.check_for_running_task(send_notification=True)  # Get full task details and send notification
-                                
-                                # Check task deadline and send warnings if needed
-                                self.check_task_deadline()
-                                
-                                # Check if task was completed (checks every 2 minutes)
-                                task_completed = self.check_task_completion()
-                                
-                                if task_completed:
-                                    # Task was completed! Exit task monitoring and check cooldown
-                                    print(f"✅ Task completed! Exiting task monitoring mode.")
-                                    print(f"🔄 Will check cooldown status on next iteration...")
-                                    time.sleep(3)  # Short sleep before checking cooldown
-                                    continue
-                                
-                                # Check if outside claiming hours - sleep until 8 AM
-                                if not self.is_within_claiming_hours():
-                                    ist = pytz.timezone('Asia/Kolkata')
-                                    now_ist = datetime.now(ist)
-                                    
-                                    if now_ist.hour >= 23:
-                                        next_8am = (now_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
-                                    else:
-                                        next_8am = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
-                                    
-                                    time_until_8am = next_8am - now_ist
-                                    sleep_seconds = int(time_until_8am.total_seconds()) + 60
-                                    hours_until = sleep_seconds / 3600
-                                    
-                                    print(f"😴 Task monitoring paused - Outside claiming hours")
-                                    print(f"💤 Sleeping for {hours_until:.1f}h until 8 AM IST")
-                                    print(f"⏰ Will resume monitoring at: {next_8am.strftime('%I:%M %p IST')}")
-                                    
-                                    # Send sleep notification
-                                    if not hasattr(self, '_task_monitor_sleep_notified') or not self._task_monitor_sleep_notified:
-                                        self._task_monitor_sleep_notified = True
-                                        self.send_notification(
-                                            "Task Monitor Sleeping",
-                                            f"😴 {hours_until:.1f}h\n⏰ Resume: {next_8am.strftime('%I:%M %p')} IST\n📋 Task still assigned",
-                                            priority="default",
-                                            tags="zzz"
-                                        )
-                                    
-                                    time.sleep(sleep_seconds)
-                                    self._task_monitor_sleep_notified = False
-                                    continue
-                                
-                                # Sleep for 2 minutes to check task submission
-                                sleep_time = 120  # 2 minutes
-                                print(f"💤 Sleeping for {sleep_time}s (2 minutes) to check task submission...")
-                                
-                                next_check = datetime.now() + timedelta(seconds=sleep_time)
-                                print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
-                                
-                                time.sleep(sleep_time)
-                                continue
-                        else:
-                            print(f"\n{'='*60}")
-                            print(f"⚠️  TASK MONITORING - Check #{loop_count} - {current_time}")
-                            print(f"{'='*60}")
-                            print(f"   Task assigned on server")
-                            print(f"{'='*60}")
-                            
-                            # Send notification on first detection of assigned task
-                            # Use a flag to prevent duplicate notifications
-                            if not hasattr(self, '_assigned_task_notified') or not self._assigned_task_notified:
-                                self._assigned_task_notified = True
-                                self.check_for_running_task(send_notification=True)
-                            
-                            # Check if task was submitted (cooldown detection)
-                            task_completed = self.check_task_completion()
-                            
-                            if task_completed:
-                                # Task was submitted! Exit task monitoring and check cooldown
-                                print(f"✅ Task submitted! Exiting task monitoring mode.")
-                                print(f"🔄 Will check cooldown status on next iteration...")
-                                time.sleep(3)  # Short sleep before checking cooldown
-                                continue
-                            
-                            # Check if outside claiming hours - sleep until 8 AM
-                            if not self.is_within_claiming_hours():
-                                ist = pytz.timezone('Asia/Kolkata')
-                                now_ist = datetime.now(ist)
-                                
-                                if now_ist.hour >= 23:
-                                    next_8am = (now_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
-                                else:
-                                    next_8am = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
-                                
-                                time_until_8am = next_8am - now_ist
-                                sleep_seconds = int(time_until_8am.total_seconds()) + 60
-                                hours_until = sleep_seconds / 3600
-                                
-                                print(f"😴 Task monitoring paused - Outside claiming hours")
-                                print(f"💤 Sleeping for {hours_until:.1f}h until 8 AM IST")
-                                print(f"⏰ Will resume monitoring at: {next_8am.strftime('%I:%M %p IST')}")
-                                
-                                # Send sleep notification
-                                if not hasattr(self, '_task_monitor_sleep_notified') or not self._task_monitor_sleep_notified:
-                                    self._task_monitor_sleep_notified = True
-                                    self.send_notification(
-                                        "Task Monitor Sleeping",
-                                        f"😴 {hours_until:.1f}h\n⏰ Resume: {next_8am.strftime('%I:%M %p')} IST\n📋 Task still assigned",
-                                        priority="default",
-                                        tags="zzz"
-                                    )
-                                
-                                time.sleep(sleep_seconds)
-                                self._task_monitor_sleep_notified = False
-                                continue
-                            
-                            # Task still in progress - check again in 2 minutes
-                            sleep_time = 120  # 2 minutes
-                            print(f"💤 Sleeping for {sleep_time}s (2 minutes) to check submission again...")
-                            
-                            next_check = datetime.now() + timedelta(seconds=sleep_time)
-                            print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
-                            
-                            time.sleep(sleep_time)
+                            print(f"   ⏳ {hours_remaining:.1f}h until deadline")
+                        
+                        print(f"{'='*60}")
+                        
+                        # Check for task completion (every 2 minutes)
+                        print(f"🔍 Checking for task submission...")
+                        task_completed = self.check_task_completion()
+                        
+                        if task_completed:
+                            # Task submitted! Cooldown started, reset flags
+                            cooldown_1h_sent = False
+                            cooldown_10min_sent = False
+                            cooldown_5min_sent = False
+                            cooldown_2min_sent = False
+                            time.sleep(3)
                             continue
+                        
+                        # Task still active, check again in 2 minutes
+                        print(f"📋 Task in progress - checking again in 2 min...")
+                        time.sleep(120)
+                        continue
                     
-                    # FLOW: 2. Check for cooldown on server
-                    # Sync cooldown from server
-                    server_cooldown = self.sync_cooldown_from_server()
+                    # ═══════════════════════════════════════════════════════════
+                    # STEP 2: Check for cooldown
+                    # ═══════════════════════════════════════════════════════════
+                    self.sync_cooldown_from_server()
                     
-                    if server_cooldown:
-                        # Server has cooldown - update local state
-                        self.is_in_cooldown()  # This will update from synced cooldown_end
-                    
-                    # Check local cooldown (now synced with server)
                     if self.is_in_cooldown():
                         remaining = self.get_cooldown_remaining()
                         hours = remaining.total_seconds() / 3600
                         minutes = remaining.total_seconds() / 60
                         
                         print(f"\n{'='*60}")
-                        print(f"⏰ COOLDOWN ACTIVE - Check #{loop_count} - {current_time}")
+                        print(f"⏰ COOLDOWN - Check #{loop_count} - {current_time}")
                         print(f"{'='*60}")
-                        print(f"   {hours:.1f}h remaining until {self.cooldown_end.strftime('%I:%M %p IST')}")
+                        print(f"   {hours:.1f}h until {self.cooldown_end.strftime('%I:%M %p IST')}")
                         print(f"{'='*60}")
                         
-                        # Send notification on first check only (and only if not already sent during sync)
-                        if loop_count == 1 and not hasattr(self, '_cooldown_notified_on_startup'):
-                            # Check if cooldown just started (less than 30 minutes elapsed)
-                            # This indicates a task was recently completed
-                            cooldown_duration = timedelta(hours=24) - remaining
-                            cooldown_elapsed_minutes = cooldown_duration.total_seconds() / 60
-                            
-                            if cooldown_elapsed_minutes < 30:
-                                # Task was recently submitted! Send notification first
-                                print(f"🎉 Recent task submission detected ({cooldown_elapsed_minutes:.1f} minutes ago)")
-                                
-                                # Fetch task summary to get total amount
-                                task_summary = self.get_task_summary()
-                                total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
-                                
-                                # Send task submission notification
-                                self.send_notification(
-                                    "Task Submitted",
-                                    f"💵 ${total_amount}",
-                                    priority="high",
-                                    tags="white_check_mark"
-                                )
-                                
-                                print(f"💰 Total Amount Earned: ${total_amount}")
-                                
-                                # Small delay before cooldown notification
-                                time.sleep(2)
-                            
-                            # Now send cooldown notification
+                        # Send notification on first check
+                        if loop_count == 1:
                             self.send_notification(
                                 "Cooldown Active",
-                                f"⌛ {hours:.1f}h left\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                                f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
                                 priority="default",
                                 tags="hourglass"
                             )
                         
-                        # Sleep until cooldown ends (with 5 second buffer)
-                        sleep_time = max(60, int(remaining.total_seconds()) + 5)
+                        # 1 hour warning
+                        if hours <= 1 and hours > 0.17 and not cooldown_1h_sent:
+                            cooldown_1h_sent = True
+                            self.send_notification(
+                                "1 Hour Left",
+                                f"⏰ {hours*60:.0f}min\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                                priority="high",
+                                tags="alarm_clock"
+                            )
                         
-                        # Send notification if cooldown is ending in 10 minutes
-                        if minutes <= 10 and minutes > 5 and not hasattr(self, '_cooldown_10min_notified'):
-                            self._cooldown_10min_notified = True
+                        # 10 minute warning
+                        if minutes <= 10 and minutes > 5 and not cooldown_10min_sent:
+                            cooldown_10min_sent = True
                             self.send_notification(
                                 "10 Minutes Left",
                                 f"⏰ {minutes:.0f}min\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
@@ -1606,204 +1395,185 @@ class TaskFluxBot:
                                 tags="alarm_clock"
                             )
                         
-                        # Send notification if cooldown is ending soon (≤5 minutes)
-                        if minutes <= 5 and not hasattr(self, '_cooldown_ending_notified'):
-                            self._cooldown_ending_notified = True
+                        # 5 minute warning
+                        if minutes <= 5 and minutes > 2 and not cooldown_5min_sent:
+                            cooldown_5min_sent = True
                             self.send_notification(
-                                "Cooldown Ending",
+                                "5 Minutes Left",
                                 f"⏰ {minutes:.0f}min\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
                                 priority="high",
                                 tags="bell"
                             )
                         
-                        # Check if cooldown will end during off-hours (before 8 AM or at/after 11 PM)
-                        ist = pytz.timezone('Asia/Kolkata')
-                        cooldown_end_ist = self.cooldown_end
-                        if cooldown_end_ist.tzinfo is None:
-                            cooldown_end_ist = ist.localize(cooldown_end_ist)
+                        # 2 minute warning (final)
+                        if minutes <= 2 and not cooldown_2min_sent:
+                            cooldown_2min_sent = True
+                            self.send_notification(
+                                "Cooldown Ending",
+                                f"🔥 {minutes:.0f}min\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                                priority="urgent",
+                                tags="fire"
+                            )
                         
-                        cooldown_end_hour = cooldown_end_ist.hour
-                        
-                        # If cooldown ends outside claiming hours (before 8 AM or at/after 11 PM)
-                        if cooldown_end_hour < 8 or cooldown_end_hour >= 23:
-                            # Sleep until 8 AM instead of waking up during off-hours
-                            now_ist = datetime.now(ist)
-                            
-                            if cooldown_end_hour >= 23:
-                                # Cooldown ends after 11 PM - sleep until next day 8 AM
-                                next_8am = (cooldown_end_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
-                            else:
-                                # Cooldown ends before 8 AM - sleep until that day's 8 AM
-                                next_8am = cooldown_end_ist.replace(hour=8, minute=0, second=0, microsecond=0)
-                            
-                            time_until_8am = next_8am - now_ist
-                            sleep_seconds = int(time_until_8am.total_seconds()) + 60
-                            hours_until = sleep_seconds / 3600
-                            
-                            print(f"⚠️ Cooldown ends during off-hours ({cooldown_end_ist.strftime('%I:%M %p')})")
-                            print(f"😴 Will sleep until 8 AM instead")
-                            print(f"💤 Sleeping for {hours_until:.1f}h until 8 AM IST")
-                            print(f"⏰ Will resume at: {next_8am.strftime('%I:%M %p IST')}")
-                            
-                            # Send adjusted sleep notification
-                            if not hasattr(self, '_cooldown_offhours_notified') or not self._cooldown_offhours_notified:
-                                self._cooldown_offhours_notified = True
-                                self.send_notification(
-                                    "Sleeping Until 8 AM",
-                                    f"⏰ Cooldown ends at {cooldown_end_ist.strftime('%I:%M %p')} (off-hours)\n😴 {hours_until:.1f}h\n☀️ Resume: {next_8am.strftime('%I:%M %p')} IST",
-                                    priority="default",
-                                    tags="zzz"
-                                )
-                            
-                            time.sleep(sleep_seconds)
-                            self._cooldown_offhours_notified = False
-                            continue
-                        
-                        # Cooldown ends during claiming hours - sleep until cooldown ends
-                        print(f"💤 Sleeping for {sleep_time/60:.1f} minutes until cooldown ends...")
-                        
-                        next_check = datetime.now() + timedelta(seconds=sleep_time)
-                        print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M %p')}")
+                        # Smart sleep - wake up before alerts
+                        if hours > 1.1:
+                            # More than 1h 6min left - sleep until 1h mark
+                            sleep_time = int((hours - 1.0) * 3600)
+                            print(f"💤 Sleeping {sleep_time//60}min until 1h mark...")
+                        elif minutes > 11:
+                            # Between 11min and 1h - sleep until 10min mark
+                            sleep_time = int((minutes - 10) * 60)
+                            print(f"💤 Sleeping {sleep_time//60}min until 10min mark...")
+                        elif minutes > 6:
+                            # Between 6-10min - sleep until 5min mark
+                            sleep_time = int((minutes - 5) * 60)
+                            print(f"💤 Sleeping {sleep_time//60}min until 5min mark...")
+                        elif minutes > 2.5:
+                            # Between 2.5-5min - sleep until 2min mark
+                            sleep_time = int((minutes - 2) * 60)
+                            print(f"💤 Sleeping {sleep_time//60}min until 2min mark...")
+                        else:
+                            # Less than 2.5min - sleep until end
+                            sleep_time = max(30, int(remaining.total_seconds()) + 5)
+                            print(f"💤 Sleeping {sleep_time}s until cooldown ends...")
                         
                         time.sleep(sleep_time)
+                        
+                        # Reset flags when cooldown ends
+                        cooldown_1h_sent = False
+                        cooldown_10min_sent = False
+                        cooldown_5min_sent = False
+                        cooldown_2min_sent = False
                         continue
                     
-                    # FLOW: 3. No task assigned and no cooldown - check for available tasks
-                    print(f"\n{'='*60}")
-                    print(f"🔍 CHECKING TASKS - Check #{loop_count} - {current_time}")
-                    print(f"{'='*60}")
+                    # ═══════════════════════════════════════════════════════════
+                    # STEP 3: No task, no cooldown - check for new tasks
+                    # ═══════════════════════════════════════════════════════════
                     
-                    # Send notification on first check only - ready to claim
-                    if loop_count == 1:
+                    # Check if within claiming hours (8 AM - 11 PM IST)
+                    if not self.is_within_claiming_hours():
                         ist = pytz.timezone('Asia/Kolkata')
-                        current_ist = datetime.now(ist)
-                        self.send_notification(
-                            "Bot Ready",
-                            f"🟢 Ready\n🕐 {current_ist.strftime('%I:%M %p IST')}",
-                            priority="high",
-                            tags="green_circle"
-                        )
-                    
-                    # Send notification that cooldown has ended (only once) - HIGH priority
-                    if hasattr(self, '_cooldown_ending_notified'):
-                        delattr(self, '_cooldown_ending_notified')
-                        self.send_notification(
-                            "Ready",
-                            f"🔥 Cooldown ended",
-                            priority="high",
-                            tags="robot"
-                        )
-                    
-                    # Clear 10-minute notification flag if it exists
-                    if hasattr(self, '_cooldown_10min_notified'):
-                        delattr(self, '_cooldown_10min_notified')
-                    
-                    # Check and claim tasks (will sync with server)
-                    claimed = self.check_and_claim_tasks()
-                    
-                    if claimed:
-                        # Task claimed! Start monitoring immediately
-                        print(f"\n✅ Task claimed successfully!")
-                        print(f"⏰ Switching to task monitoring mode (will check status immediately)")
-                        print(f"{'='*60}")
-                        time.sleep(3)  # Short 3-second delay before first check
-                        continue
-                    
-                    # No task claimed - it could be:
-                    # 1. Outside claiming hours (8 AM - 11 PM IST)
-                    # 2. No tasks available
-                    # 3. All tasks rejected (unsafe content)
-                    
-                    # Check if currently outside claiming hours and sleep until 8 AM
-                    ist = pytz.timezone('Asia/Kolkata')
-                    now_ist = datetime.now(ist)
-                    current_hour = now_ist.hour
-                    
-                    if current_hour < 8 or current_hour >= 23:
-                        # Outside claiming hours - sleep until 8 AM IST
+                        now_ist = datetime.now(ist)
+                        
+                        # Calculate next 8 AM
                         if now_ist.hour >= 23:
-                            # After 11 PM - wait until 8 AM tomorrow
                             next_8am = (now_ist + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
                         else:
-                            # Before 8 AM - wait until 8 AM today
                             next_8am = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
                         
                         time_until_8am = next_8am - now_ist
-                        sleep_seconds = int(time_until_8am.total_seconds()) + 60  # Add 1 minute buffer
+                        sleep_seconds = int(time_until_8am.total_seconds()) + 60
                         hours_until = sleep_seconds / 3600
                         
+                        print(f"\n{'='*60}")
+                        print(f"😴 OUTSIDE CLAIMING HOURS - {current_time}")
                         print(f"{'='*60}")
-                        print(f"😴 Sleeping for {hours_until:.1f}h until 8 AM IST")
-                        print(f"⏰ Next check: #{loop_count + 1} at {next_8am.strftime('%I:%M %p IST on %B %d')}")
+                        print(f"   Claiming allowed: 8 AM - 11 PM IST")
+                        print(f"   Current time: {now_ist.strftime('%I:%M %p IST')}")
+                        print(f"   Sleeping {hours_until:.1f}h until 8 AM IST")
+                        print(f"   Resume at: {next_8am.strftime('%I:%M %p IST on %B %d')}")
                         print(f"{'='*60}")
                         
-                        # Send sleep notification (only once per sleep session)
-                        if not hasattr(self, '_sleep_notified') or not self._sleep_notified:
-                            self._sleep_notified = True
+                        # Send sleep notification on first sleep only
+                        if loop_count == 1 or not hasattr(self, '_off_hours_sleep_sent'):
+                            self._off_hours_sleep_sent = True
                             self.send_notification(
-                                "Bot Sleeping",
-                                f"😴 {hours_until:.1f}h\n⏰ Resume: {next_8am.strftime('%I:%M %p')} IST",
+                                "Off-Hours Sleep",
+                                f"😴 {hours_until:.1f}h\n⏰ {next_8am.strftime('%I:%M %p IST')}\n🕐 Claiming: 8 AM - 11 PM",
                                 priority="default",
                                 tags="zzz"
                             )
                         
                         time.sleep(sleep_seconds)
                         
-                        # Reset sleep notification flag when waking up
-                        self._sleep_notified = False
-                        
-                        # Send wake-up notification
+                        # Reset flag and send wake notification
+                        self._off_hours_sleep_sent = False
                         self.send_notification(
                             "Bot Awake",
-                            f"☀️ Ready to claim!\n🕐 {next_8am.strftime('%I:%M %p')} IST",
+                            f"☀️ Ready!\n🕐 {next_8am.strftime('%I:%M %p IST')}",
                             priority="high",
                             tags="sunny"
                         )
-                        
+                        continue
+                    
+                    print(f"\n{'='*60}")
+                    print(f"🔍 TASK SEARCH - Check #{loop_count} - {current_time}")
+                    print(f"{'='*60}")
+                    
+                    # Send ready notification on first check
+                    if loop_count == 1:
+                        ist = pytz.timezone('Asia/Kolkata')
+                        current_ist = datetime.now(ist)
+                        self.send_notification(
+                            "Bot Ready",
+                            f"🟢 Searching\n🕐 {current_ist.strftime('%I:%M %p IST')}",
+                            priority="high",
+                            tags="green_circle"
+                        )
+                    
+                    # Check and claim tasks
+                    claimed = self.check_and_claim_tasks()
+                    
+                    if claimed:
+                        # Task claimed! Switch to monitoring mode
+                        print(f"✅ Task claimed! Switching to monitoring...")
+                        time.sleep(3)
                         continue
                     
                     # No task claimed - check again in 3 seconds
-                    print(f"{'='*60}")
-                    sleep_time = 3
-                    
-                    # Show next check time
-                    next_check = datetime.now() + timedelta(seconds=sleep_time)
-                    print(f"⏰ Next check: #{loop_count + 1} at {next_check.strftime('%I:%M:%S %p')}")
-                    
-                    time.sleep(sleep_time)
+                    print(f"💤 No task claimed - retrying in 3s...")
+                    time.sleep(3)
                     
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:
                     print(f"⚠️ Error in main loop: {e}")
-                    print(f"🔄 Retrying in 60 seconds...")
-                    time.sleep(60)  # Wait 1 minute on error
+                    print(f"🔄 Retrying in 60s...")
+                    
+                    # Send error notification
+                    try:
+                        import traceback
+                        error_details = traceback.format_exc()
+                        self.send_notification(
+                            "Bot Error",
+                            f"⚠️ {str(e)[:100]}\n🔄 Retrying in 60s",
+                            priority="high",
+                            tags="warning"
+                        )
+                    except:
+                        pass
+                    
+                    time.sleep(60)
                     
         except KeyboardInterrupt:
             print(f"\n🛑 Bot stopped by user")
-            print(f"📊 Final stats - Tasks seen today: {self.tasks_seen_today}")
-            print(f"📊 Total checks performed: {loop_count}")
             
-            # Get IST time
             ist = pytz.timezone('Asia/Kolkata')
             current_ist = datetime.now(ist)
             
-            # Calculate cooldown status
-            cooldown_status = "None"
-            if self.cooldown_end:
-                remaining = self.cooldown_end - datetime.now()
-                if remaining.total_seconds() > 0:
-                    hours = remaining.total_seconds() / 3600
-                    cooldown_status = f"{hours:.1f}h remaining"
-                else:
-                    cooldown_status = "Expired"
-            
             self.send_notification(
                 "Bot Stopped",
-                f"💀 Stopped",
+                f"💀 Stopped\n🕐 {current_ist.strftime('%I:%M %p IST')}",
                 priority="default",
                 tags="robot"
             )
+        except Exception as e:
+            # Critical crash - send urgent notification
+            print(f"\n💥 CRITICAL ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            try:
+                ist = pytz.timezone('Asia/Kolkata')
+                current_ist = datetime.now(ist)
+                self.send_notification(
+                    "Bot Crashed",
+                    f"💥 Critical Error\n⚠️ {str(e)[:100]}\n🕐 {current_ist.strftime('%I:%M %p IST')}",
+                    priority="urgent",
+                    tags="x"
+                )
+            except:
+                pass
 
 
 if __name__ == "__main__":

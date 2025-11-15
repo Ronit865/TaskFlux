@@ -117,13 +117,19 @@ class TaskFluxBot:
         """Check if currently in cooldown period"""
         if self.cooldown_end is None:
             return False
-        return datetime.now() < self.cooldown_end
+        # Ensure comparison uses naive datetimes
+        now = datetime.now()
+        cooldown_end = self.cooldown_end.replace(tzinfo=None) if hasattr(self.cooldown_end, 'tzinfo') and self.cooldown_end.tzinfo else self.cooldown_end
+        return now < cooldown_end
     
     def get_cooldown_remaining(self):
         """Get remaining cooldown time"""
         if self.cooldown_end is None:
             return None
-        remaining = self.cooldown_end - datetime.now()
+        # Ensure comparison uses naive datetimes
+        now = datetime.now()
+        cooldown_end = self.cooldown_end.replace(tzinfo=None) if hasattr(self.cooldown_end, 'tzinfo') and self.cooldown_end.tzinfo else self.cooldown_end
+        remaining = cooldown_end - now
         if remaining.total_seconds() <= 0:
             return None
         return remaining
@@ -451,12 +457,16 @@ class TaskFluxBot:
                 
                 # Calculate 6-hour deadline (IST timezone)
                 ist = pytz.timezone('Asia/Kolkata')
-                claim_time = datetime.now(ist)
-                deadline_time = claim_time + timedelta(hours=6)
+                claim_time_aware = datetime.now(ist)
+                deadline_time_aware = claim_time_aware + timedelta(hours=6)
                 
                 # Store deadline for tracking (convert to naive datetime for consistency)
-                self.task_claimed_at = claim_time.replace(tzinfo=None)
-                self.task_deadline = deadline_time.replace(tzinfo=None)
+                self.task_claimed_at = claim_time_aware.replace(tzinfo=None)
+                self.task_deadline = deadline_time_aware.replace(tzinfo=None)
+                
+                # Use naive datetimes for display
+                claim_time = self.task_claimed_at
+                deadline_time = self.task_deadline
                 self.deadline_warning_sent = False
                 self.deadline_final_warning_sent = False
                 
@@ -1106,8 +1116,8 @@ class TaskFluxBot:
             # No local deadline tracking, skip anyway
             return False
         
-        # Also check local task tracking (fallback)
-        if self.task_claimed_at or self.task_deadline:
+        # Also check local task tracking (fallback) - IMPORTANT for preventing double claims
+        if self.current_task_id or self.task_claimed_at or self.task_deadline:
             # We have local tracking of a task
             if self.task_deadline:
                 # Use naive datetime for comparison (stored deadline is naive)
@@ -1264,6 +1274,10 @@ class TaskFluxBot:
         print(f"   Claimable: {len(claimable_tasks)}")
         print(f"   Rejected: {len(rejected_tasks)}")
         print(f"   Claimed: ✅ 1")
+        
+        # Store current task ID to prevent double-claiming
+        self.current_task_id = task_id
+        self.current_task_type = task.get('type', 'N/A')
         
         # Send single summary notification AFTER claiming
         summary_msg = f"📊 Task Check Summary\n\n"

@@ -715,11 +715,14 @@ class TaskFluxBot:
                     print(f"✅ Cooldown detected - Task was submitted!")
                     
                     # Step 1: Get total amount
+                    print(f"📊 Fetching task summary...")
                     task_summary = self.get_task_summary()
                     total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
+                    print(f"💰 Total amount: ${total_amount}")
                     
-                    # Step 2: Send "Task Submitted" notification
-                    self.send_notification(
+                    # Step 2: Send "Task Submitted" notification with retry
+                    print(f"📤 Sending 'Task Submitted' notification...")
+                    success = self.send_notification(
                         "Task Submitted",
                         f"🎯 ${total_amount}",
                         priority="high",
@@ -727,23 +730,48 @@ class TaskFluxBot:
                         delay_after=2.0
                     )
                     
+                    if not success:
+                        print(f"⚠️ Failed to send 'Task Submitted' notification, retrying after 3s...")
+                        time.sleep(3)
+                        self.send_notification(
+                            "Task Submitted",
+                            f"🎯 ${total_amount}",
+                            priority="high",
+                            tags="dart",
+                            delay_after=2.0
+                        )
+                    
                     # Step 3: Wait before syncing cooldown
-                    print(f"⏳ Waiting 10s before cooldown notification...")
-                    time.sleep(10)
+                    print(f"⏳ Waiting 8s before cooldown notification...")
+                    time.sleep(8)
                     
                     # Step 4: Sync cooldown from server
+                    print(f"🔄 Syncing cooldown from server...")
                     self.sync_cooldown_from_server()
                     
-                    # Step 5: Send cooldown notification
+                    # Step 5: Send cooldown notification with retry
                     remaining = self.get_cooldown_remaining()
                     hours = remaining.total_seconds() / 3600 if remaining else 0
                     
-                    self.send_notification(
+                    print(f"📤 Sending 'Cooldown Started' notification...")
+                    success = self.send_notification(
                         "Cooldown Started",
                         f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
                         priority="default",
-                        tags="hourglass"
+                        tags="hourglass",
+                        delay_after=1.0
                     )
+                    
+                    if not success:
+                        print(f"⚠️ Failed to send 'Cooldown Started' notification, retrying after 3s...")
+                        time.sleep(3)
+                        self.send_notification(
+                            "Cooldown Started",
+                            f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                            priority="default",
+                            tags="hourglass",
+                            delay_after=1.0
+                        )
                     
                     # Clear task tracking
                     self.task_claimed_at = None
@@ -753,6 +781,7 @@ class TaskFluxBot:
                     self.current_task_id = None
                     self.current_task_type = None
                     
+                    print(f"✅ Task completion check complete!")
                     return True
             
             print(f"📋 No cooldown detected - task still in progress")
@@ -760,6 +789,8 @@ class TaskFluxBot:
                     
         except Exception as e:
             print(f"⚠️ Error checking task completion: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def check_task_deadline(self):

@@ -21,17 +21,8 @@ class TaskFluxBot:
         self.cooldown_end = None
         self.cooldown_file = "cooldown.json"
         
-        # Checking interval (in seconds)
-        # IMPORTANT: Tasks are PUBLIC and disappear FAST (seconds/minutes)
-        # Faster checking = better chance to claim before others
-        self.min_check_interval = 3    # 3 seconds
-        self.max_check_interval = 3    # 3 seconds (fixed interval)
-        self.current_check_interval = 3  # Start with 3 seconds
-        
         # Task availability tracking
         self.consecutive_empty_checks = 0
-        self.last_task_seen = None
-        self.tasks_seen_today = 0
         
         # Task deadline tracking (6-hour completion limit)
         self.task_claimed_at = None
@@ -85,7 +76,7 @@ class TaskFluxBot:
         self.load_cooldown()
     
     def load_cooldown(self):
-        """Load cooldown information from file"""
+        """Load cooldown information from file. Returns True if loaded, False otherwise."""
         try:
             if os.path.exists(self.cooldown_file):
                 with open(self.cooldown_file, 'r') as f:
@@ -95,14 +86,17 @@ class TaskFluxBot:
                         cooldown_str = data.get('cooldown_end')
                         if cooldown_str:
                             self.cooldown_end = datetime.fromisoformat(cooldown_str)
-        except json.JSONDecodeError:
-            # File is empty or corrupted, ignore and continue
-            pass
+                            return True
+            return False
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Error loading cooldown (corrupted file): {e}")
+            return False
         except Exception as e:
             print(f"⚠️ Error loading cooldown: {e}")
+            return False
     
     def save_cooldown(self, cooldown_end):
-        """Save cooldown information to file"""
+        """Save cooldown information to file. Returns True if saved, False on error."""
         try:
             self.cooldown_end = cooldown_end
             with open(self.cooldown_file, 'w') as f:
@@ -110,26 +104,24 @@ class TaskFluxBot:
                     json.dump({}, f)  # Write empty object instead of null
                 else:
                     json.dump({'cooldown_end': cooldown_end.isoformat()}, f)
+            return True
         except Exception as e:
             print(f"⚠️ Error saving cooldown: {e}")
+            return False
     
     def is_in_cooldown(self):
         """Check if currently in cooldown period"""
         if self.cooldown_end is None:
             return False
-        # Ensure comparison uses naive datetimes
-        now = datetime.now()
-        cooldown_end = self.cooldown_end.replace(tzinfo=None) if hasattr(self.cooldown_end, 'tzinfo') and self.cooldown_end.tzinfo else self.cooldown_end
-        return now < cooldown_end
+        # All datetimes are stored as naive (no timezone)
+        return datetime.now() < self.cooldown_end
     
     def get_cooldown_remaining(self):
         """Get remaining cooldown time"""
         if self.cooldown_end is None:
             return None
-        # Ensure comparison uses naive datetimes
-        now = datetime.now()
-        cooldown_end = self.cooldown_end.replace(tzinfo=None) if hasattr(self.cooldown_end, 'tzinfo') and self.cooldown_end.tzinfo else self.cooldown_end
-        remaining = cooldown_end - now
+        # All datetimes are stored as naive (no timezone)
+        remaining = self.cooldown_end - datetime.now()
         if remaining.total_seconds() <= 0:
             return None
         return remaining
@@ -305,10 +297,10 @@ class TaskFluxBot:
         return False
     
     def sync_cooldown_from_server(self):
-        """Sync cooldown from server (NO notifications sent here)"""
+        """Sync cooldown from server (NO notifications sent here). Returns True if cooldown found, False otherwise."""
         try:
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
-            response = self.session.get(check_url)
+            response = self.session.get(check_url, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -317,19 +309,18 @@ class TaskFluxBot:
                 allowed_after = default_data.get('allowedAfter')
                 
                 if not can_claim and allowed_after:
-                    # Parse cooldown time
-                    cooldown_end = datetime.fromisoformat(allowed_after.replace('Z', '+00:00'))
-                    
-                    # Convert to IST
+                    # Parse cooldown time from server (UTC) and convert to IST naive datetime
+                    cooldown_end_utc = datetime.fromisoformat(allowed_after.replace('Z', '+00:00'))
                     ist = pytz.timezone('Asia/Kolkata')
-                    if cooldown_end.tzinfo:
-                        cooldown_end = cooldown_end.astimezone(ist).replace(tzinfo=None)
-                    else:
-                        utc = pytz.UTC
-                        cooldown_end = utc.localize(cooldown_end).astimezone(ist).replace(tzinfo=None)
+                    utc = pytz.UTC
                     
-                    # Save cooldown (no notification)
-                    self.save_cooldown(cooldown_end)
+                    # Ensure UTC timezone, convert to IST, then remove timezone info
+                    if cooldown_end_utc.tzinfo is None:
+                        cooldown_end_utc = utc.localize(cooldown_end_utc)
+                    cooldown_end_ist = cooldown_end_utc.astimezone(ist).replace(tzinfo=None)
+                    
+                    # Save cooldown as naive datetime
+                    self.save_cooldown(cooldown_end_ist)
                     return True
                 else:
                     # No cooldown on server
@@ -337,18 +328,22 @@ class TaskFluxBot:
                         self.cooldown_end = None
                         self.save_cooldown(None)
                     return False
-            
-            return False
+            else:
+                print(f"⚠️ Failed to sync cooldown: HTTP {response.status_code}")
+                return False
                         
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout syncing cooldown from server")
+            return False
         except Exception as e:
             print(f"⚠️ Error syncing cooldown: {e}")
             return False
     
     def can_claim_task(self):
-        """Check if we can claim a task (not in cooldown)"""
+        """Check if we can claim a task (not in cooldown). Returns True if can claim, False on definite restriction."""
         try:
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
-            response = self.session.get(check_url)
+            response = self.session.get(check_url, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -356,8 +351,12 @@ class TaskFluxBot:
                 can_claim = data.get('canClaim') or data.get('canAssign') or data.get('allowed', True)
                 return can_claim
             else:
+                print(f"⚠️ Failed to check claim status: HTTP {response.status_code}")
                 # If endpoint fails, assume we can try
                 return True
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout checking claim status")
+            return True
         except Exception as e:
             print(f"⚠️ Error checking claim status: {e}")
             return True
@@ -368,7 +367,7 @@ class TaskFluxBot:
             # TaskFlux uses task-pool endpoint for available tasks
             tasks_url = f"{self.base_url}/api/tasks/task-pool"
             
-            response = self.session.get(tasks_url)
+            response = self.session.get(tasks_url, timeout=10)
             
             if response.status_code == 200:
                 tasks = response.json()
@@ -395,21 +394,21 @@ class TaskFluxBot:
                             
                             if assigned_at and not self.task_claimed_at:
                                 try:
+                                    # Parse times from server (UTC) and convert to IST naive
                                     ist = pytz.timezone('Asia/Kolkata')
-                                    claimed_time = datetime.fromisoformat(assigned_at.replace('Z', '+00:00'))
+                                    utc = pytz.UTC
                                     
-                                    if claimed_time.tzinfo:
-                                        claimed_time_ist = claimed_time.astimezone(ist)
-                                        claimed_time = claimed_time_ist.replace(tzinfo=None)
-                                    else:
-                                        utc = pytz.UTC
-                                        claimed_time = utc.localize(claimed_time).astimezone(ist).replace(tzinfo=None)
+                                    claimed_time_utc = datetime.fromisoformat(assigned_at.replace('Z', '+00:00'))
+                                    if claimed_time_utc.tzinfo is None:
+                                        claimed_time_utc = utc.localize(claimed_time_utc)
+                                    claimed_time = claimed_time_utc.astimezone(ist).replace(tzinfo=None)
                                     
                                     # Use assignmentDeadline if available, otherwise calculate 6 hours
                                     if assignment_deadline:
-                                        deadline_time = datetime.fromisoformat(assignment_deadline.replace('Z', '+00:00'))
-                                        if deadline_time.tzinfo:
-                                            deadline_time = deadline_time.astimezone(ist).replace(tzinfo=None)
+                                        deadline_time_utc = datetime.fromisoformat(assignment_deadline.replace('Z', '+00:00'))
+                                        if deadline_time_utc.tzinfo is None:
+                                            deadline_time_utc = utc.localize(deadline_time_utc)
+                                        deadline_time = deadline_time_utc.astimezone(ist).replace(tzinfo=None)
                                     else:
                                         deadline_time = claimed_time + timedelta(hours=6)
                                     
@@ -430,9 +429,12 @@ class TaskFluxBot:
                 
                 return available_tasks
             else:
-                print(f"⚠️ Failed to fetch tasks: {response.status_code}")
+                print(f"⚠️ Failed to fetch tasks: HTTP {response.status_code}")
                 return []
                 
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout fetching tasks from server")
+            return []
         except Exception as e:
             print(f"⚠️ Error fetching tasks: {e}")
             return []
@@ -445,7 +447,7 @@ class TaskFluxBot:
             # TaskFlux claim endpoint - taskId in URL path
             claim_url = f"{self.base_url}/api/tasks/assign-task-to-self/{task_id}"
             
-            response = self.session.put(claim_url)
+            response = self.session.put(claim_url, timeout=15)
             
             if response.status_code == 200:
                 try:
@@ -591,83 +593,24 @@ class TaskFluxBot:
                     print(f"   Response: {response.text}")
                 return False
             else:
-                print(f"❌ Failed to claim task: {response.status_code}")
-                print(f"Response: {response.text}")
+                print(f"❌ Failed to claim task: HTTP {response.status_code}")
+                print(f"   Response: {response.text}")
                 return False
-                
+        
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout claiming task {task_id}")
+            return False
         except Exception as e:
             print(f"❌ Error claiming task: {e}")
             return False
     
-    def submit_task(self, task_id, submission_data):
-        """Submit completed task"""
-        try:
-            print(f"📤 Submitting task {task_id}...")
-            
-            submit_url = f"{self.base_url}/api/tasks/{task_id}/submission"
-            
-            response = self.session.post(submit_url, json=submission_data)
-            
-            if response.status_code == 200:
-                print(f"✅ Task submitted!")
-                
-                # NOW start the 24-hour cooldown after task completion
-                cooldown_end = datetime.now() + timedelta(hours=24)
-                self.save_cooldown(cooldown_end)
-                
-                # Get IST time for notification
-                ist = pytz.timezone('Asia/Kolkata')
-                cooldown_end_ist = cooldown_end.astimezone(ist)
-                
-                # Get total amount
-                task_summary = self.get_task_summary()
-                total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
-                
-                # Clear deadline tracking since task is completed
-                self.task_claimed_at = None
-                self.task_deadline = None
-                self.deadline_warning_sent = False
-                self.deadline_final_warning_sent = False
-                self.current_task_id = None
-                self.current_task_type = None
-                
-                # Reset assigned task notification flag
-                if hasattr(self, '_assigned_task_notified'):
-                    self._assigned_task_notified = False
-                
-                # Send task submitted notification first
-                self.send_notification(
-                    "Task Submitted",
-                    f"🎯 ${total_amount}",
-                    priority="high",
-                    tags="dart"
-                )
-                
-                # Wait 10 seconds before sending cooldown notification
-                print(f"⏳ Waiting 10 seconds before cooldown notification...")
-                time.sleep(10)
-                
-                # Now send cooldown notification
-                self.send_notification(
-                    "Cooldown Started",
-                    f"⌛ 24h\n🕐 {cooldown_end_ist.strftime('%I:%M %p IST')}",
-                    priority="default",
-                    tags="hourglass"
-                )
-                return True
-            else:
-                print(f"❌ Failed to submit task: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Error submitting task: {e}")
-            return False
+
     
     def get_task_summary(self):
-        """Fetch task summary to get total amount earned"""
+        """Fetch task summary to get total amount earned. Returns dict on success, None on error."""
         try:
             summary_url = f"{self.base_url}/api/tasks/task-summary"
-            response = self.session.get(summary_url)
+            response = self.session.get(summary_url, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -681,9 +624,12 @@ class TaskFluxBot:
                     'remainingPayout': remaining_payout
                 }
             else:
-                print(f"⚠️ Failed to fetch task summary: {response.status_code}")
+                print(f"⚠️ Failed to fetch task summary: HTTP {response.status_code}")
                 return None
                 
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout fetching task summary")
+            return None
         except Exception as e:
             print(f"⚠️ Error fetching task summary: {e}")
             return None
@@ -703,7 +649,7 @@ class TaskFluxBot:
             
             # Check server for cooldown
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
-            response = self.session.get(check_url)
+            response = self.session.get(check_url, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -769,7 +715,10 @@ class TaskFluxBot:
             
             print(f"📋 No cooldown detected - task still in progress")
             return False
-                    
+            
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout checking task completion")
+            return False
         except Exception as e:
             print(f"⚠️ Error checking task completion: {e}")
             import traceback
@@ -810,14 +759,14 @@ class TaskFluxBot:
                 cooldown_end = datetime.now() + timedelta(hours=24)
                 self.save_cooldown(cooldown_end)
                 
-                # Get IST time for notification
-                ist_tz = pytz.timezone('Asia/Kolkata')
-                cooldown_end_ist = ist_tz.localize(cooldown_end) if cooldown_end.tzinfo is None else cooldown_end.astimezone(ist_tz)
+                # Format cooldown time for notification (already in IST as naive datetime)
+                ist = pytz.timezone('Asia/Kolkata')
+                cooldown_end_aware = ist.localize(cooldown_end)
                 
                 # Send cooldown notification
                 self.send_notification(
                     "Cooldown Started",
-                    f"⌛ 24h (Missed)\n🕐 {cooldown_end_ist.strftime('%I:%M %p IST')}",
+                    f"⌛ 24h (Missed)\n🕐 {cooldown_end_aware.strftime('%I:%M %p IST')}",
                     priority="high",
                     tags="hourglass"
                 )
@@ -869,7 +818,7 @@ class TaskFluxBot:
         try:
             # Method 1: Check can-assign-task-to-self endpoint (fastest)
             check_url = f"{self.base_url}/api/tasks/can-assign-task-to-self"
-            response = self.session.get(check_url)
+            response = self.session.get(check_url, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -887,7 +836,7 @@ class TaskFluxBot:
             
             # Method 2: Check task-pool for tasks assigned to us (most reliable)
             tasks_url = f"{self.base_url}/api/tasks/task-pool"
-            pool_response = self.session.get(tasks_url)
+            pool_response = self.session.get(tasks_url, timeout=10)
             
             if pool_response.status_code == 200:
                 pool_data = pool_response.json()
@@ -902,9 +851,12 @@ class TaskFluxBot:
                         return True
                     
             return False
-            
+        
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout checking for assigned task on server")
+            return False
         except Exception as e:
-            # If we can't check, assume no assigned task
+            print(f"⚠️ Error checking for assigned task: {e}")
             return False
     
     def check_for_running_task(self, send_notification=True):
@@ -916,7 +868,7 @@ class TaskFluxBot:
             # Use task-pool endpoint to get actual task details
             # task-summary only has statistics (completed count, payout numbers)
             tasks_url = f"{self.base_url}/api/tasks/task-pool"
-            response = self.session.get(tasks_url)
+            response = self.session.get(tasks_url, timeout=10)
             
             if response.status_code != 200:
                 return False
@@ -957,22 +909,20 @@ class TaskFluxBot:
             ist = pytz.timezone('Asia/Kolkata')
             if assigned_at:
                 try:
-                    # Parse ISO format
-                    claimed_time = datetime.fromisoformat(assigned_at.replace('Z', '+00:00'))
+                    # Parse times from server (UTC) and convert to IST naive
+                    utc = pytz.UTC
                     
-                    # Convert to IST
-                    if claimed_time.tzinfo:
-                        claimed_time_ist = claimed_time.astimezone(ist)
-                        claimed_time = claimed_time_ist.replace(tzinfo=None)
-                    else:
-                        utc = pytz.UTC
-                        claimed_time = utc.localize(claimed_time).astimezone(ist).replace(tzinfo=None)
+                    claimed_time_utc = datetime.fromisoformat(assigned_at.replace('Z', '+00:00'))
+                    if claimed_time_utc.tzinfo is None:
+                        claimed_time_utc = utc.localize(claimed_time_utc)
+                    claimed_time = claimed_time_utc.astimezone(ist).replace(tzinfo=None)
                     
                     # Use assignmentDeadline if available, otherwise calculate 6 hours
                     if assignment_deadline:
-                        deadline_time = datetime.fromisoformat(assignment_deadline.replace('Z', '+00:00'))
-                        if deadline_time.tzinfo:
-                            deadline_time = deadline_time.astimezone(ist).replace(tzinfo=None)
+                        deadline_time_utc = datetime.fromisoformat(assignment_deadline.replace('Z', '+00:00'))
+                        if deadline_time_utc.tzinfo is None:
+                            deadline_time_utc = utc.localize(deadline_time_utc)
+                        deadline_time = deadline_time_utc.astimezone(ist).replace(tzinfo=None)
                     else:
                         deadline_time = claimed_time + timedelta(hours=6)
                     
@@ -1040,9 +990,12 @@ class TaskFluxBot:
                     )
             
             return True
-                
+        
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Timeout checking for running task")
+            return False
         except Exception as e:
-            print(f"⚠️ Error checking for assigned task: {e}")
+            print(f"⚠️ Error checking for running task: {e}")
             return False
     
     def is_within_claiming_hours(self):
@@ -1174,13 +1127,10 @@ class TaskFluxBot:
             print(f"📭 No tasks available at the moment (empty check #{self.consecutive_empty_checks})")
             return False
         
-        # Tasks found - reset counters and speed up checks
+        # Tasks found - reset empty check counter
         if self.consecutive_empty_checks > 0:
             print(f"✨ Tasks appeared after {self.consecutive_empty_checks} empty checks!")
         self.consecutive_empty_checks = 0
-        self.current_check_interval = self.min_check_interval
-        self.last_task_seen = datetime.now()
-        self.tasks_seen_today += len(tasks)
         
         print(f"📋 Found {len(tasks)} task(s) available")
         

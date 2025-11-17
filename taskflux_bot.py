@@ -691,8 +691,9 @@ class TaskFluxBot:
     def check_task_completion(self):
         """
         Check if task was submitted by detecting cooldown on server.
-        Sends: 1) Task Submitted notification, 2) Cooldown Started notification
+        Only sends "Task Submitted" notification.
         Returns True if task submitted, False otherwise.
+        Note: Main loop handles cooldown sync and "Cooldown Started" notification.
         """
         if not self.task_claimed_at:
             return False
@@ -709,80 +710,62 @@ class TaskFluxBot:
                 default_data = data.get('default', {})
                 can_claim = default_data.get('canAssign', True)
                 allowed_after = default_data.get('allowedAfter')
+                reason = default_data.get('reason', '')
                 
-                # If cooldown detected = task was submitted!
+                # Check reason to distinguish between assigned task vs cooldown
+                # Reason: "You already have an assigned task..." = task still assigned
+                # Reason: "You can only perform 1 task in 24 hours..." = cooldown (task submitted!)
                 if not can_claim and allowed_after:
-                    print(f"✅ Cooldown detected - Task was submitted!")
-                    
-                    # Step 1: Get total amount
-                    print(f"📊 Fetching task summary...")
-                    task_summary = self.get_task_summary()
-                    total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
-                    print(f"💰 Total amount: ${total_amount}")
-                    
-                    # Step 2: Send "Task Submitted" notification with retry
-                    print(f"📤 Sending 'Task Submitted' notification...")
-                    success = self.send_notification(
-                        "Task Submitted",
-                        f"🎯 ${total_amount}",
-                        priority="high",
-                        tags="dart",
-                        delay_after=2.0
-                    )
-                    
-                    if not success:
-                        print(f"⚠️ Failed to send 'Task Submitted' notification, retrying after 3s...")
-                        time.sleep(3)
-                        self.send_notification(
+                    # Check if it's cooldown (not just assigned task)
+                    if 'only perform' in reason.lower() or '24 hours' in reason.lower():
+                        print(f"✅ Cooldown detected - Task was submitted!")
+                        print(f"   Reason: {reason}")
+                        
+                        # Get total amount and send notification
+                        print(f"📊 Fetching task summary...")
+                        task_summary = self.get_task_summary()
+                        total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
+                        print(f"💰 Total amount: ${total_amount}")
+                        
+                        # Send "Task Submitted" notification with retry
+                        print(f"📤 Sending 'Task Submitted' notification...")
+                        success = self.send_notification(
                             "Task Submitted",
                             f"🎯 ${total_amount}",
                             priority="high",
                             tags="dart",
                             delay_after=2.0
                         )
-                    
-                    # Step 3: Wait before syncing cooldown
-                    print(f"⏳ Waiting 8s before cooldown notification...")
-                    time.sleep(8)
-                    
-                    # Step 4: Sync cooldown from server
-                    print(f"🔄 Syncing cooldown from server...")
-                    self.sync_cooldown_from_server()
-                    
-                    # Step 5: Send cooldown notification with retry
-                    remaining = self.get_cooldown_remaining()
-                    hours = remaining.total_seconds() / 3600 if remaining else 0
-                    
-                    print(f"📤 Sending 'Cooldown Started' notification...")
-                    success = self.send_notification(
-                        "Cooldown Started",
-                        f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
-                        priority="default",
-                        tags="hourglass",
-                        delay_after=1.0
-                    )
-                    
-                    if not success:
-                        print(f"⚠️ Failed to send 'Cooldown Started' notification, retrying after 3s...")
-                        time.sleep(3)
-                        self.send_notification(
-                            "Cooldown Started",
-                            f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
-                            priority="default",
-                            tags="hourglass",
-                            delay_after=1.0
-                        )
-                    
-                    # Clear task tracking
-                    self.task_claimed_at = None
-                    self.task_deadline = None
-                    self.deadline_warning_sent = False
-                    self.deadline_final_warning_sent = False
-                    self.current_task_id = None
-                    self.current_task_type = None
-                    
-                    print(f"✅ Task completion check complete!")
-                    return True
+                        
+                        if not success:
+                            print(f"⚠️ Failed to send 'Task Submitted' notification, retrying after 3s...")
+                            time.sleep(3)
+                            self.send_notification(
+                                "Task Submitted",
+                                f"🎯 ${total_amount}",
+                                priority="high",
+                                tags="dart",
+                                delay_after=2.0
+                            )
+                        
+                        # Clear task tracking
+                        self.task_claimed_at = None
+                        self.task_deadline = None
+                        self.deadline_warning_sent = False
+                        self.deadline_final_warning_sent = False
+                        self.current_task_id = None
+                        self.current_task_type = None
+                        
+                        # Sleep 30 seconds before returning (allows main loop to sync cooldown)
+                        print(f"⏳ Waiting 30s before cooldown sync...")
+                        time.sleep(30)
+                        
+                        print(f"✅ Task completion detected!")
+                        return True
+                    else:
+                        # Still have assigned task, not cooldown yet
+                        print(f"📋 Task still assigned - reason: {reason}")
+                        return False
             
             print(f"📋 No cooldown detected - task still in progress")
             return False
@@ -1398,6 +1381,48 @@ class TaskFluxBot:
                     # ═══════════════════════════════════════════════════════════
                     # STEP 2: Check for cooldown
                     # ═══════════════════════════════════════════════════════════
+                    # First check if we just completed a task (before syncing cooldown)
+                    if self.task_claimed_at:
+                        # We had a task - check if it was submitted
+                        task_completed = self.check_task_completion()
+                        if task_completed:
+                            # Task was submitted! Now sync cooldown and send cooldown notification
+                            print(f"🔄 Syncing cooldown from server...")
+                            self.sync_cooldown_from_server()
+                            
+                            # Send cooldown notification
+                            if self.cooldown_end:
+                                remaining = self.get_cooldown_remaining()
+                                hours = remaining.total_seconds() / 3600 if remaining else 0
+                                
+                                print(f"📤 Sending 'Cooldown Started' notification...")
+                                success = self.send_notification(
+                                    "Cooldown Started",
+                                    f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                                    priority="default",
+                                    tags="hourglass",
+                                    delay_after=1.0
+                                )
+                                
+                                if not success:
+                                    print(f"⚠️ Failed to send 'Cooldown Started' notification, retrying after 3s...")
+                                    time.sleep(3)
+                                    self.send_notification(
+                                        "Cooldown Started",
+                                        f"⌛ {hours:.1f}h\n🕐 {self.cooldown_end.strftime('%I:%M %p IST')}",
+                                        priority="default",
+                                        tags="hourglass",
+                                        delay_after=1.0
+                                    )
+                            
+                            # Reset cooldown flags for new cooldown cycle
+                            cooldown_1h_sent = False
+                            cooldown_10min_sent = False
+                            cooldown_5min_sent = False
+                            cooldown_2min_sent = False
+                            time.sleep(3)
+                            continue
+                    
                     self.sync_cooldown_from_server()
                     
                     if self.is_in_cooldown():

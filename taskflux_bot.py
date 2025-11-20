@@ -637,7 +637,7 @@ class TaskFluxBot:
     def check_task_completion(self):
         """
         Check if task was submitted by detecting cooldown on server.
-        Only sends "Task Submitted" notification.
+        Flow: Task Submitted notification → 3min sleep → Payout notification → 30s sleep → return
         Returns True if task submitted, False otherwise.
         Note: Main loop handles cooldown sync and "Cooldown Started" notification.
         """
@@ -667,20 +667,14 @@ class TaskFluxBot:
                         print(f"✅ Cooldown detected - Task was submitted!")
                         print(f"   Reason: {reason}")
                         
-                        # Get total amount and send notification
-                        print(f"📊 Fetching task summary...")
-                        task_summary = self.get_task_summary()
-                        total_amount = task_summary.get('totalAmount', 0) if task_summary else 0
-                        print(f"💰 Total amount: ${total_amount}")
-                        
-                        # Send "Task Submitted" notification with retry
+                        # STEP 1: Send "Task Submitted" notification
                         print(f"📤 Sending 'Task Submitted' notification...")
                         success = self.send_notification(
                             "Task Submitted",
-                            f"🎯 ${total_amount}",
+                            f"✅ Completed",
                             priority="high",
-                            tags="dart",
-                            delay_after=2.0
+                            tags="white_check_mark",
+                            delay_after=1.0
                         )
                         
                         if not success:
@@ -688,11 +682,45 @@ class TaskFluxBot:
                             time.sleep(3)
                             self.send_notification(
                                 "Task Submitted",
-                                f"🎯 ${total_amount}",
+                                f"✅ Completed",
                                 priority="high",
-                                tags="dart",
-                                delay_after=2.0
+                                tags="white_check_mark",
+                                delay_after=1.0
                             )
+                        
+                        # STEP 2: Sleep 3 minutes
+                        print(f"⏳ Sleeping 3 minutes before fetching payout...")
+                        time.sleep(180)  # 3 minutes
+                        
+                        # STEP 3: Get payout and send notification
+                        print(f"📊 Fetching task summary for payout...")
+                        task_summary = self.get_task_summary()
+                        remaining_payout = task_summary.get('remainingPayout', 0) if task_summary else 0
+                        print(f"💰 Remaining payout: ${remaining_payout}")
+                        
+                        print(f"📤 Sending payout notification...")
+                        success = self.send_notification(
+                            "Payout Amount",
+                            f"💵 ${remaining_payout}",
+                            priority="default",
+                            tags="money_bag",
+                            delay_after=1.0
+                        )
+                        
+                        if not success:
+                            print(f"⚠️ Failed to send payout notification, retrying after 3s...")
+                            time.sleep(3)
+                            self.send_notification(
+                                "Payout Amount",
+                                f"💵 ${remaining_payout}",
+                                priority="default",
+                                tags="money_bag",
+                                delay_after=1.0
+                            )
+                        
+                        # STEP 4: Sleep 30 seconds before cooldown sync
+                        print(f"⏳ Sleeping 30s before cooldown sync...")
+                        time.sleep(30)
                         
                         # Clear task tracking
                         self.task_claimed_at = None
@@ -701,10 +729,6 @@ class TaskFluxBot:
                         self.deadline_final_warning_sent = False
                         self.current_task_id = None
                         self.current_task_type = None
-                        
-                        # Sleep 30 seconds before returning (allows main loop to sync cooldown)
-                        print(f"⏳ Waiting 30s before cooldown sync...")
-                        time.sleep(30)
                         
                         print(f"✅ Task completion detected!")
                         return True
@@ -1244,12 +1268,7 @@ class TaskFluxBot:
         self.current_task_type = task.get('type', 'N/A')
         
         # Send single summary notification AFTER claiming
-        summary_msg = f"📊 Task Check Summary\n\n"
-        summary_msg += f"🔍 Total Found: {len(tasks)}\n"
-        summary_msg += f"✅ Claimable: {len(claimable_tasks)}\n"
-        summary_msg += f"🚫 Rejected: {len(rejected_tasks)}\n"
-        summary_msg += f"🎯 Claimed: 1"
-        summary_msg += f"\n\nTask details sent separately!"
+        summary_msg = f"🔍 {len(tasks)} found\n✅ {len(claimable_tasks)} safe\n🚫 {len(rejected_tasks)} rejected"
         
         self.send_notification(
             "Task Check Summary",

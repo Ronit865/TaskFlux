@@ -703,7 +703,7 @@ class TaskFluxBot:
                             "Payout Amount",
                             f"💵 ${remaining_payout}",
                             priority="default",
-                            tags="money_bag",
+                            tags="dollar",
                             delay_after=1.0
                         )
                         

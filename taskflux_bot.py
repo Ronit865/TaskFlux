@@ -69,7 +69,32 @@ class TaskFluxBot:
             
             # Spam indicators (medium risk)
             'check dm', 'check inbox', 'sent you a message', 'link in bio',
-            'link in profile', 'click profile', 'bot account'
+            'link in profile', 'click profile', 'bot account',
+            
+            # NSFW content (high risk - commonly filtered)
+            'porn', 'xxx', 'nsfw', 'nude', 'nudes', 'naked', 'sex', 'sexy',
+            'onlyfans', 'only fans', 'premium snapchat', 'buy my nudes',
+            'adult content', 'explicit', 'pornhub', 'xvideos', 'xhamster',
+            '18+', 'nsfl', 'gore', 'hentai', 'cam girl', 'camgirl',
+            'escort', 'hooker', 'prostitute', 'call girl', 'massage parlor',
+            'happy ending', 'erotic', 'fetish', 'bdsm', 'kink',
+            'masturbat', 'orgasm', 'cumshot', 'blowjob', 'handjob',
+            'titties', 'boobs', 'pussy', 'dick', 'cock', 'penis', 'vagina',
+            'dildo', 'vibrator', 'sex toy', 'lingerie', 'underwear pics'
+        ]
+        
+        # NSFW domains and websites (commonly blocked)
+        self.nsfw_domains = [
+            'pornhub.com', 'xvideos.com', 'xhamster.com', 'redtube.com',
+            'youporn.com', 'xnxx.com', 'spankbang.com', 'porn.com',
+            'tube8.com', 'beeg.com', 'txxx.com', 'vporn.com',
+            'onlyfans.com', 'fansly.com', 'patreon.com/adult',
+            'chaturbate.com', 'myfreecams.com', 'cam4.com', 'streamate.com',
+            'livejasmin.com', 'stripchat.com', 'bongacams.com',
+            'manyvids.com', 'clips4sale.com', 'iwantclips.com',
+            'reddit.com/r/nsfw', 'reddit.com/r/gonewild', 'reddit.com/r/realgirls',
+            'imgur.com/r/nsfw', 'imgur.com/r/gonewild',
+            'erome.com', 'redgifs.com', 'gfycat.com/nsfw'
         ]
         
         # Load saved cooldown info
@@ -209,92 +234,81 @@ class TaskFluxBot:
     
     def login(self):
         """Login to TaskFlux"""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                print("\n" + "="*60)
-                print(f"🔐 Logging in as {self.email}... (Attempt {attempt + 1}/{max_retries})")
-                print("="*60)
+        try:
+            print("\n" + "="*60)
+            print(f"🔐 Logging in as {self.email}...")
+            print("="*60)
+            
+            # Actual TaskFlux login endpoint
+            login_url = f"{self.base_url}/api/users/login"
+            
+            payload = {
+                "email": self.email,
+                "password": self.password
+            }
+            
+            response = self.session.post(login_url, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                # TaskFlux uses cookie-based authentication (accessToken cookie)
+                # The session automatically handles cookies, no need to manually set headers
                 
-                # Actual TaskFlux login endpoint
-                login_url = f"{self.base_url}/api/users/login"
+                # Try to get user data from response
+                user_data = None
+                try:
+                    data = response.json()
+                    if 'user' in data:
+                        user_data = data['user']
+                        self.user_id = user_data.get('_id') or user_data.get('id')
+                    elif '_id' in data:
+                        self.user_id = data.get('_id')
+                        user_data = data
+                except:
+                    pass
                 
-                payload = {
-                    "email": self.email,
-                    "password": self.password
-                }
+                print(f"✅ Login successful!")
                 
-                response = self.session.post(login_url, json=payload, timeout=30)
+                # Get IST time
+                ist = pytz.timezone('Asia/Kolkata')
+                current_ist = datetime.now(ist)
                 
-                if response.status_code == 200:
-                    # TaskFlux uses cookie-based authentication (accessToken cookie)
-                    # The session automatically handles cookies, no need to manually set headers
+                self.send_notification(
+                    "Bot Started",
+                    f"🧑‍💻 {self.email}",
+                    priority="default",
+                    tags="robot"
+                )
+                return True
+            else:
+                print(f"❌ Login failed: {response.status_code}")
+                print(f"Response: {response.text}")
+                self.send_notification(
+                    "Login Failed",
+                    f"❌ HTTP {response.status_code}",
+                    priority="urgent",
+                    tags="x"
+                )
+                return False
                     
-                    # Try to get user data from response
-                    user_data = None
-                    try:
-                        data = response.json()
-                        if 'user' in data:
-                            user_data = data['user']
-                            self.user_id = user_data.get('_id') or user_data.get('id')
-                        elif '_id' in data:
-                            self.user_id = data.get('_id')
-                            user_data = data
-                    except:
-                        pass
-                    
-                    print(f"✅ Login successful!")
-                    
-                    # Get IST time
-                    ist = pytz.timezone('Asia/Kolkata')
-                    current_ist = datetime.now(ist)
-                    
-                    self.send_notification(
-                        "Bot Started",
-                        f"🧑‍💻 {self.email}",
-                        priority="default",
-                        tags="robot"
-                    )
-                    return True
-                else:
-                    print(f"❌ Login failed: {response.status_code}")
-                    print(f"Response: {response.text}")
-                    if attempt == max_retries - 1:
-                        # Send critical failure notification
-                        self.send_notification(
-                            "Login Failed",
-                            f"❌ HTTP {response.status_code}\n🔄 All {max_retries} attempts failed",
-                            priority="urgent",
-                            tags="x"
-                        )
-                        return False
-                    time.sleep(5)
-                        
-            except requests.exceptions.Timeout:
-                print(f"⚠️ Login timeout (attempt {attempt + 1}/{max_retries})")
-                if attempt == max_retries - 1:
-                    self.send_notification(
-                        "Login Timeout",
-                        f"❌ Server not responding\n🔄 All {max_retries} attempts failed",
-                        priority="urgent",
-                        tags="x"
-                    )
-                    return False
-                time.sleep(5)
-                    
-            except Exception as e:
-                print(f"❌ Login error: {e}")
-                if attempt == max_retries - 1:
-                    self.send_notification(
-                        "Login Error",
-                        f"❌ {str(e)[:100]}\n🔄 All {max_retries} attempts failed",
-                        priority="urgent",
-                        tags="x"
-                    )
-                    return False
-                time.sleep(5)
-        
-        return False
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Login timeout")
+            self.send_notification(
+                "Login Timeout",
+                f"❌ Server not responding",
+                priority="urgent",
+                tags="x"
+            )
+            return False
+                
+        except Exception as e:
+            print(f"❌ Login error: {e}")
+            self.send_notification(
+                "Login Error",
+                f"❌ {str(e)[:100]}",
+                priority="urgent",
+                tags="x"
+            )
+            return False
     
     def sync_cooldown_from_server(self):
         """Sync cooldown from server (NO notifications sent here). Returns True if cooldown found, False otherwise."""
@@ -1052,10 +1066,33 @@ class TaskFluxBot:
         
         content_lower = content.lower()
         
+        # Check for NSFW domains/links FIRST (highest priority)
+        for domain in self.nsfw_domains:
+            if domain in content_lower:
+                return False, f"Contains NSFW domain: '{domain}'"
+        
         # Check for suspicious patterns
         for pattern in self.suspicious_patterns:
             if pattern.lower() in content_lower:
                 return False, f"Contains suspicious pattern: '{pattern}'"
+        
+        # Check for URL patterns that might lead to NSFW content
+        import re
+        # Match common URL patterns
+        url_pattern = r'https?://[^\s]+'
+        urls = re.findall(url_pattern, content_lower)
+        
+        for url in urls:
+            # Check each URL for NSFW indicators
+            for domain in self.nsfw_domains:
+                if domain in url:
+                    return False, f"Contains NSFW link: '{url[:50]}...'"
+            
+            # Check for NSFW path patterns
+            nsfw_paths = ['/nsfw', '/adult', '/xxx', '/18+', '/porn', '/nude', '/erotic']
+            for path in nsfw_paths:
+                if path in url:
+                    return False, f"URL contains NSFW path: '{path}'"
         
         # Check for excessive caps (>60% caps with minimum 15 letters)
         # AutoMod often flags ALL CAPS as spam

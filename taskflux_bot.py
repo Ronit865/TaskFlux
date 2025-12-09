@@ -732,9 +732,9 @@ class TaskFluxBot:
                                 delay_after=1.0
                             )
                         
-                        # STEP 4: Sleep 30 seconds before cooldown sync
-                        print(f"⏳ Sleeping 30s before cooldown sync...")
-                        time.sleep(30)
+                        # STEP 4: Sleep 5 seconds before cooldown sync
+                        print(f"⏳ Sleeping 5s before cooldown sync...")
+                        time.sleep(5)
                         
                         # Clear task tracking
                         self.task_claimed_at = None

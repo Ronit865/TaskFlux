@@ -1442,6 +1442,16 @@ class TaskFluxBot:
                     
                     if self.is_in_cooldown():
                         remaining = self.get_cooldown_remaining()
+                        
+                        # Safety check: if remaining is None, cooldown ended
+                        if remaining is None:
+                            print(f"✅ Cooldown ended!")
+                            cooldown_1h_sent = False
+                            cooldown_10min_sent = False
+                            cooldown_5min_sent = False
+                            cooldown_2min_sent = False
+                            continue
+                        
                         hours = remaining.total_seconds() / 3600
                         minutes = remaining.total_seconds() / 60
                         

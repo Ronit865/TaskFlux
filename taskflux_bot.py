@@ -97,6 +97,77 @@ class TaskFluxBot:
             'erome.com', 'redgifs.com', 'gfycat.com/nsfw'
         ]
         
+        # NSFW subreddits to filter out (common adult/NSFW subreddits)
+        self.nsfw_subreddits = [
+            # Popular NSFW subreddits
+            'nsfw', 'gonewild', 'realgirls', 'nsfw_gifs', 'nsfw_gif',
+            'nsfwfunny', 'nsfwhardcore', 'rule34', 'hentai', 'ecchi',
+            'porn', 'porninfifteenseconds', 'pornstarhq', 'pornid',
+            'holdthemoan', 'gwcouples', 'gwnerdy', 'gonemild', 
+            'petitegonewild', 'gonewildcurvy', 'gonewildplus',
+            'gonewildcolor', 'gonewildaudio', 'gonewildstories',
+            'asiansgonewild', 'indiansgonewild', 'latinas', 'latinareleased',
+            'onoff', 'undressedBabes', 'ass', 'asstastic', 'booty',
+            'bigasses', 'pawg', 'boobs', 'boobies', 'bigboobs', 'tits',
+            'bigtits', 'busty', 'bustypetite', 'hugeboobs', 'tinytits',
+            'aa_cups', 'collegesluts', 'collegensfw', 'amateur',
+            'realamateurporn', 'homemadexxx', 'couplesgonewild',
+            'hotwife', 'wifesharing', 'cuckold', 'swingers',
+            'milf', 'milfs', 'maturemilf', 'gilf',
+            'cumsluts', 'cumfetish', 'cumshots', 'facials',
+            'creampies', 'breeding', 'impregnation',
+            'bdsm', 'bondage', 'femdom', 'maledom', 'submissive',
+            'feet', 'footfetish', 'feetpics', 'buttsandbarefeet',
+            'thighs', 'thighdeology', 'legs', 'pantyhose', 'stockings',
+            'lingerie', 'lingeriegw', 'underwear', 'panties',
+            'thongs', 'bikinis', 'bikinibridge', 'sexyfrex',
+            'celebnsfw', 'celebhub', 'nsfwcelebarchive',
+            'jerkofftocelebs', 'celebritypussy', 'celebsnaked',
+            'lesbians', 'dykesgonewild', 'girlskissing',
+            'publicflashing', 'flashingandflaunting', 'exhibitionism',
+            'workgonewild', 'naughtyatwork', 'gonewildatwork',
+            'fuckmeat', 'degradingholes', 'freeuse',
+            'rapefantasies', 'cnc_connect', 'rapekink',
+            'thick', 'thickthighs', 'theratio', 'datgap',
+            'simps', 'godpussy', 'spreading', 'pelfie',
+            'facesitting', 'lipsthatgrip', 'whenitgoesin',
+            'insertions', 'distension', 'suctiondildos',
+            'orgasmiccontractions', 'quiver', 'orgasms',
+            'masturbation', 'jilling', 'grool', 'wetspot',
+            'camwhores', 'camsluts', 'streamersgonemild',
+            'tiktoksweets', 'tiktokthots', 'tiktoknsfw',
+            'cosplaybutts', 'nsfwcosplay', 'cosplaygirls',
+            'anime_nsfw', 'animeporn', 'hentaigifs',
+            'genshin_impact_nsfw', 'honkaiimpact3',
+            'fitnakedgirls', 'fitgirls', 'athleticgirls',
+            'gymgirls', 'yogapants', 'girlsinyogapants',
+            'assinyogapants', 'tightshorts', 'tightsqueeze',
+            'altgonewild', 'gothsluts', 'bigtiddygothgf',
+            'suicidegirls', 'tattooed_girls', 'hotchickswithtattoos',
+            'girlswithneonhair', 'hairypussy', 'razorfree',
+            'gonewild30plus', 'gonewild40plus', 'onmywildside',
+            'slutwife', 'wouldyoubonemywife', 'wifepictrading',
+            'nudes', 'nude', 'nudeselfies', 'snapchatsext',
+            'sextingfriendfinder', 'dirtySnapchat',
+            'onlyfanspromo', 'onlyfansadvice', 'fansly_advice',
+            'sexsells', 'usedpanties', 'pantyselling',
+            'nsfwskyrim', 'rule34lol', 'rule34overwatch',
+            'overwatchporn', 'leagueoflegends34', 'pokeporn',
+            'slutsofsnapchat', 'dirtysnapchat', 'snapchat_sluts',
+            'festivalsluts', 'trashyboners', 'trashy',
+            'wincest', 'incest', 'incestporn',
+            'gayporn', 'gaypornhunters', 'gaybrosgonewild',
+            'ladybonersgw', 'massivecock', 'penis',
+            'twinks', 'femboys', 'traps', 'sissies',
+            'transgonewild', 'transdiy', 'mtfbutts',
+            'pegging', 'strapon', 'gentlefemdom',
+            # NSFW indicators in subreddit name
+            'gonewild', 'nsfw', 'porn', 'xxx', 'nude', 'naked',
+            'sex', 'hentai', 'rule34', 'cumslut', 'slut', 'whore',
+            'milf', 'gilf', 'dilf', 'pawg', 'bwc', 'bbc',
+            '18+', 'adult', 'explicit'
+        ]
+        
         # Load saved cooldown info
         self.load_cooldown()
     
@@ -1137,6 +1208,57 @@ class TaskFluxBot:
         
         return True, "Content appears safe"
     
+    def is_nsfw_subreddit(self, task):
+        """
+        Check if the task is targeting an NSFW subreddit.
+        Returns: (is_nsfw: bool, subreddit_name: str or None)
+        """
+        # Extract subreddit from various possible fields
+        subreddit = None
+        
+        # Direct subreddit field
+        subreddit = task.get('subreddit', '') or task.get('targetSubreddit', '') or task.get('sub', '')
+        
+        # Check in URL field
+        url = task.get('url', '') or task.get('link', '') or task.get('postUrl', '') or task.get('targetUrl', '')
+        if url and not subreddit:
+            # Extract subreddit from Reddit URL (e.g., reddit.com/r/subreddit_name)
+            import re
+            match = re.search(r'reddit\.com/r/([a-zA-Z0-9_]+)', url)
+            if match:
+                subreddit = match.group(1)
+        
+        # Check in content/description for subreddit mentions
+        if not subreddit:
+            content = task.get('content', '') or task.get('description', '') or task.get('body', '') or task.get('text', '')
+            if content:
+                import re
+                # Look for r/subreddit pattern
+                match = re.search(r'\br/([a-zA-Z0-9_]+)', content)
+                if match:
+                    subreddit = match.group(1)
+        
+        if not subreddit:
+            return False, None
+        
+        subreddit_lower = subreddit.lower().strip()
+        
+        # Check if exact match in NSFW subreddits list
+        if subreddit_lower in [s.lower() for s in self.nsfw_subreddits]:
+            return True, subreddit
+        
+        # Check if subreddit contains any NSFW indicator keywords
+        nsfw_keywords = ['nsfw', 'gonewild', 'porn', 'xxx', 'nude', 'naked', 'sex', 
+                         'hentai', 'rule34', 'cumslut', 'slut', 'milf', 'gilf',
+                         'boobs', 'tits', 'ass', 'pussy', 'dick', 'cock', 'penis',
+                         '18+', 'adult', 'explicit', 'erotic', 'fetish', 'bdsm']
+        
+        for keyword in nsfw_keywords:
+            if keyword in subreddit_lower:
+                return True, subreddit
+        
+        return False, subreddit
+    
     def check_and_claim_tasks(self):
         """Check for available tasks and claim if not in cooldown"""
         # First, check if we already have an assigned task on the server
@@ -1222,6 +1344,16 @@ class TaskFluxBot:
                    for allowed_type in allowed_task_types)
             
             if type_matches:
+                # Check if task is targeting an NSFW subreddit first
+                is_nsfw, subreddit_name = self.is_nsfw_subreddit(task)
+                if is_nsfw:
+                    rejected_tasks.append({
+                        'task': task,
+                        'reason': f"NSFW subreddit - r/{subreddit_name}",
+                        'content': None
+                    })
+                    continue
+                
                 # Check task content for safety
                 content = task.get('content', '') or task.get('comment', '') or task.get('text', '') or task.get('body', '')
                 is_safe, reason = self.is_content_safe(content)

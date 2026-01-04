@@ -97,6 +97,12 @@ class TaskFluxBot:
             'erome.com', 'redgifs.com', 'gfycat.com/nsfw'
         ]
         
+        # Subreddits where user is banned - tasks from these will be skipped
+        self.banned_subreddits = [
+            'sportsbetting',
+            'personalfinance'
+        ]
+        
         # Load saved cooldown info
         self.load_cooldown()
     
@@ -446,6 +452,14 @@ class TaskFluxBot:
                     
                     # Skip published/completed tasks
                     if is_published or status in ['published', 'completed', 'expired', 'cancelled']:
+                        continue
+                    
+                    # Skip tasks from subreddits where user is banned
+                    task_subreddit = task.get('subreddit') or task.get('subredditName') or ''
+                    # Remove 'r/' prefix if present for comparison
+                    task_subreddit_clean = task_subreddit.lower().replace('r/', '')
+                    if task_subreddit_clean in [s.lower() for s in self.banned_subreddits]:
+                        print(f"⛔ Skipping task from banned subreddit: r/{task_subreddit_clean}")
                         continue
                     
                     # Only include truly available tasks
@@ -1055,7 +1069,7 @@ class TaskFluxBot:
             
             # Allowed hours: 8 AM (8) to 10:59 PM (22:59)
             # Hour 23 = 11:00 PM onwards, which should be blocked
-            if 8 <= current_hour < 23:
+            if 8 <= current_hour < 24:
                 return True
             else:
                 print(f"⏰ Outside claiming hours (8 AM - 11 PM IST). Current time: {now_ist.strftime('%I:%M %p IST')}")

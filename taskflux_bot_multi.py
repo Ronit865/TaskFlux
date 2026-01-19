@@ -6,22 +6,27 @@ from dotenv import load_dotenv
 import os
 import pytz
 import threading
-import queue
 
 # Load environment variables
 load_dotenv()
 
 class TaskFluxBot:
-    def __init__(self):
+    def __init__(self, email=None, password=None, account_id=None, ntfy_url=None):
         self.base_url = "https://taskflux.net"
-        self.email = os.getenv("EMAIL")
-        self.password = os.getenv("PASSWORD")
-        self.ntfy_url = os.getenv("NTFY_URL")
+        
+        # Multi-account support: use provided params or fallback to env vars
+        self.email = email or os.getenv("EMAIL")
+        self.password = password or os.getenv("PASSWORD")
+        self.account_id = account_id or 1  # Default to account 1 for backward compatibility
+        self.ntfy_url = ntfy_url or os.getenv("NTFY_URL")
+        
         self.session = requests.Session()
         self.token = None
         self.user_id = None
         self.cooldown_end = None
-        self.cooldown_file = "cooldown.json"
+        
+        # Per-account cooldown file
+        self.cooldown_file = f"cooldown_account{self.account_id}.json"
         
         # Task availability tracking
         self.consecutive_empty_checks = 0
@@ -33,16 +38,6 @@ class TaskFluxBot:
         self.deadline_final_warning_sent = False
         self.current_task_id = None  # Track current assigned task ID
         self.current_task_type = None  # Track current task type (RedditCommentTask or RedditReplyTask)
-        
-        # Command handling (ntfy bidirectional communication)
-        self.is_paused = False  # Pause state - when True, bot won't claim new tasks
-        self.command_queue = queue.Queue()  # Thread-safe queue for commands
-        self.listener_thread = None  # Background thread for listening to ntfy
-        self.stop_listener = False  # Flag to gracefully stop listener thread
-        
-        # Custom claiming hours (default: 8 AM - 11 PM IST)
-        self.claim_start_hour = 8  # Start hour (24-hour format)
-        self.claim_end_hour = 23   # End hour (24-hour format, 23 = 11 PM)
         
         # Suspicious words/patterns that might trigger AutoMod or get removed
         # Based on common Reddit AutoMod rules and spam patterns
@@ -255,12 +250,18 @@ class TaskFluxBot:
             return False
             
         try:
+            # Add account prefix to title for multi-account support
+            if self.account_id:
+                prefixed_title = f"[Acc {self.account_id}] {title}"
+            else:
+                prefixed_title = title
+            
             # Remove emojis and non-Latin-1 characters from title for HTTP header compatibility
             # HTTP headers must be Latin-1 compatible and cannot have leading/trailing whitespace
-            clean_title = title.encode('latin-1', errors='ignore').decode('latin-1').strip()
+            clean_title = prefixed_title.encode('latin-1', errors='ignore').decode('latin-1').strip()
             if not clean_title:
                 # If title becomes empty after removing emojis, use a default
-                clean_title = "TaskFlux Notification"
+                clean_title = f"[Acc {self.account_id}] TaskFlux Notification"
             
             headers = {
                 "Priority": priority,
@@ -272,7 +273,7 @@ class TaskFluxBot:
             
             # Send full message (including emojis) as UTF-8 encoded bytes
             # Include original title with emojis in the message body
-            full_message = f"{title}\n\n{message}" if title != clean_title else message
+            full_message = f"{prefixed_title}\n\n{message}" if prefixed_title != clean_title else message
             
             # Retry logic with timeout
             max_retries = 3  # Increased from 2 to 3
@@ -319,283 +320,6 @@ class TaskFluxBot:
         except Exception as e:
             print(f"❌ Error sending notification: {e}")
             return False
-    
-    def listen_for_commands(self):
-        """
-        Background thread that listens for commands from ntfy topic.
-        Uses Server-Sent Events (SSE) streaming to receive messages in real-time.
-        """
-        if not self.ntfy_url:
-            print("⚠️ No ntfy URL configured, command listener disabled")
-            return
-        
-        print("🎧 Starting command listener...")
-        retry_delay = 5
-        
-        while not self.stop_listener:
-            try:
-                # Subscribe to ntfy topic using JSON streaming
-                stream_url = f"{self.ntfy_url}/json"
-                print(f"🔌 Connecting to ntfy stream: {stream_url}")
-                
-                response = requests.get(stream_url, stream=True, timeout=None)
-                
-                if response.status_code == 200:
-                    print("✅ Connected to ntfy stream, listening for commands...")
-                    retry_delay = 5  # Reset retry delay on successful connection
-                    
-                    # Read stream line by line
-                    for line in response.iter_lines():
-                        if self.stop_listener:
-                            print("🛑 Stopping command listener...")
-                            break
-                        
-                        if line:
-                            try:
-                                # Parse JSON message
-                                data = json.loads(line.decode('utf-8'))
-                                message = data.get('message', '').strip().lower()
-                                
-                                # Ignore empty messages
-                                if not message:
-                                    continue
-                                
-                                # IMPORTANT: Only accept single-word commands OR 'time X-Y' format
-                                # to avoid processing our own multi-line notifications (which get echoed back)
-                                # Valid single-word: pause, stop, unpause, start, resume, status, info, commands, help
-                                # Valid multi-word: time 8-23, time 6-22, etc.
-                                is_time_command = message.startswith('time ') and len(message.split()) == 2
-                                is_single_word = '\n' not in message and len(message.split()) == 1
-                                
-                                if not (is_single_word or is_time_command):
-                                    # Skip multi-line or other multi-word messages
-                                    continue
-                                
-                                # Add command to queue
-                                print(f"📥 Received command: {message}")
-                                self.command_queue.put(message)
-                                
-                            except json.JSONDecodeError:
-                                # Skip non-JSON lines (e.g., keepalive)
-                                continue
-                            except Exception as e:
-                                print(f"⚠️ Error parsing message: {e}")
-                else:
-                    print(f"❌ Failed to connect to ntfy stream: HTTP {response.status_code}")
-                    if not self.stop_listener:
-                        print(f"   Retrying in {retry_delay} seconds...")
-                        time.sleep(retry_delay)
-                        retry_delay = min(retry_delay * 2, 60)  # Exponential backoff, max 60s
-                        
-            except requests.exceptions.RequestException as e:
-                if not self.stop_listener:
-                    print(f"⚠️ Connection error: {e}")
-                    print(f"   Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 60)  # Exponential backoff, max 60s
-            except Exception as e:
-                if not self.stop_listener:
-                    print(f"❌ Unexpected error in command listener: {e}")
-                    print(f"   Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 60)
-        
-        print("👋 Command listener stopped")
-    
-    def process_commands(self):
-        """Process any pending commands from the queue (non-blocking)"""
-        while not self.command_queue.empty():
-            try:
-                command = self.command_queue.get_nowait()
-                print(f"🔧 Processing command: {command}")
-                
-                # Parse and handle commands
-                if command in ['pause', 'stop']:
-                    self.handle_pause()
-                elif command in ['unpause', 'start', 'resume']:
-                    self.handle_unpause()
-                elif command in ['status', 'info']:
-                    self.handle_status()
-                elif command in ['commands', 'help']:
-                    self.handle_commands()
-                elif command.startswith('time '):
-                    self.handle_time(command)
-                else:
-                    # Unknown command - send helpful message
-                    self.send_notification(
-                        "Unknown Command",
-                        f"❓ '{command}'\n📝 Send 'commands' for help",
-                        priority="low",
-                        tags="question"
-                    )
-                    
-            except queue.Empty:
-                break
-            except Exception as e:
-                print(f"⚠️ Error processing command: {e}")
-    
-    def handle_pause(self):
-        """Handle pause command"""
-        if self.is_paused:
-            self.send_notification(
-                "Already Paused",
-                "⏸️ Bot is already paused",
-                priority="low",
-                tags="pause_button"
-            )
-        else:
-            self.is_paused = True
-            print("⏸️ Bot paused by command")
-            self.send_notification(
-                "Bot Paused",
-                "⏸️ Bot will not claim new tasks\n✅ Monitoring assigned tasks continues\n💬 Send 'unpause' to resume",
-                priority="default",
-                tags="pause_button"
-            )
-    
-    def handle_unpause(self):
-        """Handle unpause/start command"""
-        if not self.is_paused:
-            self.send_notification(
-                "Already Running",
-                "▶️ Bot is already running",
-                priority="low",
-                tags="arrow_forward"
-            )
-        else:
-            self.is_paused = False
-            print("▶️ Bot resumed by command")
-            self.send_notification(
-                "Bot Running",
-                "▶️ Bot resumed\n🎯 Will claim tasks when available",
-                priority="default",
-                tags="arrow_forward"
-            )
-    
-    def handle_status(self):
-        """Handle status command - send comprehensive bot status"""
-        ist = pytz.timezone('Asia/Kolkata')
-        current_time = datetime.now(ist)
-        
-        # Build status message
-        status_msg = f"🕐 {current_time.strftime('%I:%M %p IST')}\n"
-        
-        # Bot state
-        state = "⏸️ PAUSED" if self.is_paused else "▶️ RUNNING"
-        status_msg += f"{state}\n"
-        
-        # Active hours
-        start_12h = f"{self.claim_start_hour % 12 or 12} {'AM' if self.claim_start_hour < 12 else 'PM'}"
-        end_12h = f"{self.claim_end_hour % 12 or 12} {'AM' if self.claim_end_hour < 12 else 'PM'}"
-        status_msg += f"⏰ Active: {start_12h}-{end_12h}\n"
-        
-        # Cooldown status
-        if self.is_in_cooldown():
-            remaining = self.get_cooldown_remaining()
-            if remaining:
-                hours = remaining.total_seconds() / 3600
-                minutes = (remaining.total_seconds() % 3600) / 60
-                if hours >= 1:
-                    status_msg += f"⏳ Cooldown: {int(hours)}h {int(minutes)}m\n"
-                else:
-                    status_msg += f"⏳ Cooldown: {int(minutes)}m\n"
-        else:
-            status_msg += "✅ Ready to claim\n"
-        
-        # Assigned task status
-        if self.task_claimed_at and self.task_deadline:
-            time_remaining = self.task_deadline - self.get_ist_now()
-            if time_remaining.total_seconds() > 0:
-                hours_remaining = time_remaining.total_seconds() / 3600
-                status_msg += f"📋 Task: {hours_remaining:.1f}h left"
-            else:
-                status_msg += "📋 Task: Overdue"
-        else:
-            status_msg += "📋 No task"
-        
-        # Send status
-        self.send_notification(
-            "Bot Status",
-            status_msg,
-            priority="default",
-            tags="bar_chart"
-        )
-    
-    def handle_commands(self):
-        """Handle commands/help command - list all available commands"""
-        help_msg = "⏸️ pause - Pause claiming\n"
-        help_msg += "▶️ unpause - Resume claiming\n"
-        help_msg += "📊 status - Bot status\n"
-        help_msg += "⏰ time 8-23 - Set hours\n"
-        help_msg += "📝 help - Show commands"
-        
-        self.send_notification(
-            "Bot Commands",
-            help_msg,
-            priority="default",
-            tags="information_source"
-        )
-    
-    def handle_time(self, command):
-        """Handle time command - set custom claiming hours"""
-        try:
-            # Parse format: "time 8-23" or "time 6-22"
-            parts = command.split()
-            if len(parts) != 2:
-                raise ValueError("Invalid format")
-            
-            time_range = parts[1]
-            if '-' not in time_range:
-                raise ValueError("Missing hyphen")
-            
-            start_str, end_str = time_range.split('-')
-            start_hour = int(start_str)
-            end_hour = int(end_str)
-            
-            # Validate hours (0-23)
-            if not (0 <= start_hour <= 23 and 0 <= end_hour <= 23):
-                raise ValueError("Hours must be 0-23")
-            
-            if start_hour >= end_hour:
-                raise ValueError("Start hour must be less than end hour")
-            
-            # Update claiming hours
-            self.claim_start_hour = start_hour
-            self.claim_end_hour = end_hour
-            
-            print(f"⏰ Claiming hours updated: {start_hour}:00 - {end_hour}:00 IST")
-            
-            # Format hours for display (convert to 12-hour format)
-            start_12h = f"{start_hour % 12 or 12} {'AM' if start_hour < 12 else 'PM'}"
-            end_12h = f"{end_hour % 12 or 12} {'AM' if end_hour < 12 else 'PM'}"
-            
-            self.send_notification(
-                "Hours Updated",
-                f"⏰ Claiming: {start_12h} - {end_12h} IST\n✅ Active for {end_hour - start_hour} hours/day",
-                priority="default",
-                tags="clock"
-            )
-            
-        except ValueError as e:
-            error_msg = "❌ Invalid format\n"
-            error_msg += "📝 Use: time START-END\n"
-            error_msg += "Example: time 8-23\n"
-            error_msg += "⏰ Hours: 0-23 (24h format)"
-            
-            self.send_notification(
-                "Invalid Time",
-                error_msg,
-                priority="low",
-                tags="x"
-            )
-        except Exception as e:
-            print(f"⚠️ Error parsing time command: {e}")
-            self.send_notification(
-                "Time Error",
-                f"⚠️ {str(e)}",
-                priority="low",
-                tags="warning"
-            )
     
     def login(self):
         """Login to TaskFlux"""
@@ -1411,18 +1135,19 @@ class TaskFluxBot:
             return False
     
     def is_within_claiming_hours(self):
-        """Check if current time is within allowed claiming hours (default: 8 AM - 11 PM IST)"""
+        """Check if current time is within allowed claiming hours (8 AM - 11 PM IST)"""
         try:
+            # Get current time in Indian timezone
             ist = pytz.timezone('Asia/Kolkata')
-            current_time_ist = datetime.now(ist)
-            current_hour = current_time_ist.hour
+            now_ist = datetime.now(ist)
+            current_hour = now_ist.hour
             
-            # Use custom claiming hours (can be changed via 'time' command)
-            # Default is 8 AM (8) to 11 PM (23)
-            if self.claim_start_hour <= current_hour < self.claim_end_hour:
+            # Allowed hours: 8 AM (8) to 10:59 PM (22:59)
+            # Hour 23 = 11:00 PM onwards, which should be blocked
+            if 8 <= current_hour < 23:
                 return True
             else:
-                print(f"⏰ Outside claiming hours ({self.claim_start_hour} AM - {self.claim_end_hour-1} PM IST). Current time: {current_time_ist.strftime('%I:%M %p IST')}")
+                print(f"⏰ Outside claiming hours (8 AM - 11 PM IST). Current time: {now_ist.strftime('%I:%M %p IST')}")
                 return False
         except Exception as e:
             print(f"⚠️ Error checking time: {e}")
@@ -1764,12 +1489,6 @@ class TaskFluxBot:
             print("❌ Failed to login. Exiting...")
             return
         
-        # Start command listener thread
-        if self.ntfy_url:
-            self.listener_thread = threading.Thread(target=self.listen_for_commands, daemon=True)
-            self.listener_thread.start()
-            print("✅ Command listener thread started")
-        
         loop_count = 0
         cooldown_1h_sent = False
         cooldown_10min_sent = False
@@ -1782,11 +1501,6 @@ class TaskFluxBot:
                     loop_count += 1
                     ist = pytz.timezone('Asia/Kolkata')
                     current_time = datetime.now(ist).strftime('%I:%M:%S %p IST')
-                    
-                    # ═══════════════════════════════════════════════════════════
-                    # STEP 0: Process any pending commands
-                    # ═══════════════════════════════════════════════════════════
-                    self.process_commands()
                     
                     # ═══════════════════════════════════════════════════════════
                     # STEP 1: Check for assigned task on server
@@ -1827,10 +1541,7 @@ class TaskFluxBot:
                         
                         # Task still active, check again in 2 minutes
                         print(f"📋 Task in progress - checking again in 2 min...")
-                        # Break sleep into chunks to process commands
-                        for _ in range(12):  # 12 chunks of 10 seconds = 120 seconds
-                            time.sleep(10)
-                            self.process_commands()
+                        time.sleep(120)
                         continue
                     
                     # ═══════════════════════════════════════════════════════════
@@ -1991,14 +1702,7 @@ class TaskFluxBot:
                             sleep_time = max(30, int(remaining.total_seconds()) + 5)
                             print(f"💤 Sleeping {sleep_time}s until cooldown ends...")
                         
-                        # Break long sleeps into 10-second chunks to process commands
-                        elapsed = 0
-                        while elapsed < sleep_time and not self.stop_listener:
-                            chunk = min(10, sleep_time - elapsed)
-                            time.sleep(chunk)
-                            elapsed += chunk
-                            # Process any commands that came in during sleep
-                            self.process_commands()
+                        time.sleep(sleep_time)
                         
                         # Reset flags when cooldown ends
                         cooldown_1h_sent = False
@@ -2045,14 +1749,7 @@ class TaskFluxBot:
                                 tags="zzz"
                             )
                         
-                        # Break long sleep into 10-second chunks to process commands
-                        elapsed = 0
-                        while elapsed < sleep_seconds and not self.stop_listener:
-                            chunk = min(10, sleep_seconds - elapsed)
-                            time.sleep(chunk)
-                            elapsed += chunk
-                            # Process any commands that came in during sleep
-                            self.process_commands()
+                        time.sleep(sleep_seconds)
                         
                         # Reset flag and send wake notification
                         self._off_hours_sleep_sent = False
@@ -2079,13 +1776,7 @@ class TaskFluxBot:
                             tags="green_circle"
                         )
                     
-                    # Check and claim tasks (unless paused)
-                    if self.is_paused:
-                        print(f"⏸️ Bot is paused - skipping task claiming")
-                        print(f"💤 Checking again in 10s...")
-                        time.sleep(10)
-                        continue
-                    
+                    # Check and claim tasks
                     claimed = self.check_and_claim_tasks()
                     
                     if claimed:
@@ -2122,12 +1813,6 @@ class TaskFluxBot:
         except KeyboardInterrupt:
             print(f"\n🛑 Bot stopped by user")
             
-            # Stop command listener thread
-            self.stop_listener = True
-            if self.listener_thread and self.listener_thread.is_alive():
-                print("⏳ Waiting for command listener to stop...")
-                self.listener_thread.join(timeout=5)
-            
             ist = pytz.timezone('Asia/Kolkata')
             current_ist = datetime.now(ist)
             
@@ -2143,11 +1828,6 @@ class TaskFluxBot:
             import traceback
             traceback.print_exc()
             
-            # Stop command listener thread
-            self.stop_listener = True
-            if self.listener_thread and self.listener_thread.is_alive():
-                self.listener_thread.join(timeout=2)
-            
             try:
                 ist = pytz.timezone('Asia/Kolkata')
                 current_ist = datetime.now(ist)
@@ -2161,7 +1841,135 @@ class TaskFluxBot:
                 pass
 
 
+class MultiAccountManager:
+    """Manages multiple TaskFlux accounts running concurrently"""
+    
+    def __init__(self):
+        self.accounts = []
+        self.threads = []
+        self.shared_ntfy_url = os.getenv("NTFY_URL")
+        self.load_accounts_from_env()
+    
+    def load_accounts_from_env(self):
+        """Load all accounts from environment variables"""
+        print("\n" + "="*60)
+        print("🔧 MULTI-ACCOUNT MANAGER")
+        print("="*60)
+        
+        i = 1
+        while True:
+            email = os.getenv(f"EMAIL_{i}")
+            if not email:
+                break
+            
+            password = os.getenv(f"PASSWORD_{i}")
+            if not password:
+                print(f"⚠️ Account {i}: EMAIL_{i} found but PASSWORD_{i} missing, skipping")
+                i += 1
+                continue
+            
+            # Use account-specific ntfy URL if available, else fall back to shared
+            ntfy_url = os.getenv(f"NTFY_URL_{i}", self.shared_ntfy_url)
+            
+            self.accounts.append({
+                'id': i,
+                'email': email,
+                'password': password,
+                'ntfy_url': ntfy_url
+            })
+            
+            print(f"✅ Account {i}: {email}")
+            if ntfy_url:
+                # Show only the topic name from the URL for privacy
+                if 'ntfy.sh/' in ntfy_url:
+                    topic = ntfy_url.split('ntfy.sh/')[-1]
+                    print(f"   📱 Notifications: ntfy.sh/{topic}")
+                else:
+                    print(f"   📱 Notifications: configured")
+            else:
+                print(f"   ⚠️ No notification URL configured")
+            
+            i += 1
+        
+        print("="*60)
+        print(f"📊 Total accounts loaded: {len(self.accounts)}")
+        print("="*60 + "\n")
+    
+    def run_account(self, account_id, email, password, ntfy_url):
+        """Run a single account in a thread"""
+        try:
+            print(f"\n[Account {account_id}] Starting bot for {email}...")
+            bot = TaskFluxBot(email, password, account_id, ntfy_url)
+            bot.run(check_interval=3)
+        except Exception as e:
+            print(f"\n[Account {account_id}] ❌ Fatal error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def start_all_accounts(self):
+        """Start all accounts in separate threads"""
+        if not self.accounts:
+            print("❌ No accounts found!")
+            print("\nPlease configure accounts in .env:")
+            print("  EMAIL_1=account1@example.com")
+            print("  PASSWORD_1=password1")
+            print("  NTFY_URL_1=https://ntfy.sh/topic1  (optional)")
+            print("")
+            print("  EMAIL_2=account2@example.com")
+            print("  PASSWORD_2=password2")
+            print("  NTFY_URL_2=https://ntfy.sh/topic2  (optional)")
+            return
+        
+        print(f"\n🚀 Starting {len(self.accounts)} account(s)...\n")
+        
+        for account in self.accounts:
+            thread = threading.Thread(
+                target=self.run_account,
+                args=(account['id'], account['email'], account['password'], account['ntfy_url']),
+                daemon=False,
+                name=f"Account-{account['id']}"
+            )
+            self.threads.append(thread)
+            thread.start()
+            print(f"✅ Thread started for Account {account['id']}: {account['email']}")
+            # Small delay between thread starts
+            time.sleep(0.5)
+        
+        print(f"\n{'='*60}")
+        print(f"🎯 All {len(self.accounts)} account(s) running!")
+        print(f"{'='*60}\n")
+        
+        # Wait for all threads to complete
+        try:
+            for thread in self.threads:
+                thread.join()
+        except KeyboardInterrupt:
+            print("\n🛑 Stopping all accounts...")
+            # Threads will stop on their own as they catch KeyboardInterrupt
+
+
 if __name__ == "__main__":
-    bot = TaskFluxBot()
-    # Fixed check interval: 3 seconds
-    bot.run(check_interval=3)
+    # Check if running in multi-account mode
+    # Multi-account mode: EMAIL_1, EMAIL_2, etc.
+    # Single  account mode: EMAIL (backward compatibility)
+    
+    if os.getenv("EMAIL_1"):
+        # Multi-account mode
+        print("\n" + "="*60)
+        print("🌟 TASKFLUX MULTI-ACCOUNT BOT")
+        print("="*60)
+        print("Mode: Multi-Account")
+        print("="*60 + "\n")
+        
+        manager = MultiAccountManager()
+        manager.start_all_accounts()
+    else:
+        # Single account mode (backward compatibility)
+        print("\n" + "="*60)
+        print("🌟 TASKFLUX BOT")
+        print("="*60)
+        print("Mode: Single Account")
+        print("="*60 + "\n")
+        
+        bot = TaskFluxBot()
+        bot.run(check_interval=3)

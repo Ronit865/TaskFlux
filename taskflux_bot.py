@@ -171,6 +171,11 @@ class TaskFluxBot:
         # Load saved cooldown info
         self.load_cooldown()
     
+    def get_ist_now(self):
+        """Get current time in IST as a naive datetime (for consistency with stored times)"""
+        ist = pytz.timezone('Asia/Kolkata')
+        return datetime.now(ist).replace(tzinfo=None)
+    
     def load_cooldown(self):
         """Load cooldown information from file. Returns True if loaded, False otherwise."""
         try:
@@ -210,14 +215,14 @@ class TaskFluxBot:
         if self.cooldown_end is None:
             return False
         # All datetimes are stored as naive (no timezone)
-        return datetime.now() < self.cooldown_end
+        return self.get_ist_now() < self.cooldown_end
     
     def get_cooldown_remaining(self):
         """Get remaining cooldown time"""
         if self.cooldown_end is None:
             return None
         # All datetimes are stored as naive (no timezone)
-        remaining = self.cooldown_end - datetime.now()
+        remaining = self.cooldown_end - self.get_ist_now()
         if remaining.total_seconds() <= 0:
             return None
         return remaining
@@ -420,7 +425,7 @@ class TaskFluxBot:
                     return True
                 else:
                     # No cooldown on server
-                    if self.cooldown_end and datetime.now() >= self.cooldown_end:
+                    if self.cooldown_end and self.get_ist_now() >= self.cooldown_end:
                         self.cooldown_end = None
                         self.save_cooldown(None)
                     return False
@@ -648,7 +653,7 @@ class TaskFluxBot:
                 print(f"{'═'*60}\n")
                 
                 # Calculate time left until deadline
-                time_left = deadline_time - datetime.now()
+                time_left = deadline_time - self.get_ist_now()
                 hours_left = time_left.total_seconds() / 3600
                 
                 # Format notification with only necessary info
@@ -849,7 +854,7 @@ class TaskFluxBot:
             return  # No active task
         
         # Use naive datetime for consistency (all stored datetimes are naive)
-        now = datetime.now()
+        now = self.get_ist_now()
         task_deadline = self.task_deadline
         
         time_remaining = task_deadline - now
@@ -874,7 +879,7 @@ class TaskFluxBot:
             # If server didn't start cooldown, start it locally (24 hours)
             if not self.is_in_cooldown():
                 print(f"⏰ Server hasn't started cooldown - starting 24h cooldown locally")
-                cooldown_end = datetime.now() + timedelta(hours=24)
+                cooldown_end = self.get_ist_now() + timedelta(hours=24)
                 self.save_cooldown(cooldown_end)
                 
                 # Format cooldown time for notification (already in IST as naive datetime)
@@ -1265,7 +1270,7 @@ class TaskFluxBot:
         if self.check_for_assigned_task_on_server():
             # Task is assigned - don't check for new tasks
             if self.task_deadline:
-                time_remaining = self.task_deadline - datetime.now()
+                time_remaining = self.task_deadline - self.get_ist_now()
                 hours_remaining = time_remaining.total_seconds() / 3600
                 
                 if hours_remaining > 0:
@@ -1280,7 +1285,7 @@ class TaskFluxBot:
             # We have local tracking of a task
             if self.task_deadline:
                 # Use naive datetime for comparison (stored deadline is naive)
-                now = datetime.now()
+                now = self.get_ist_now()
                 time_remaining = self.task_deadline - now
             else:
                 time_remaining = timedelta(0)
@@ -1481,7 +1486,8 @@ class TaskFluxBot:
             while True:
                 try:
                     loop_count += 1
-                    current_time = datetime.now().strftime('%I:%M:%S %p')
+                    ist = pytz.timezone('Asia/Kolkata')
+                    current_time = datetime.now(ist).strftime('%I:%M:%S %p IST')
                     
                     # ═══════════════════════════════════════════════════════════
                     # STEP 1: Check for assigned task on server
@@ -1501,7 +1507,7 @@ class TaskFluxBot:
                         # Check deadline and send warnings (2h, 30min)
                         if self.task_deadline:
                             self.check_task_deadline()
-                            time_remaining = self.task_deadline - datetime.now()
+                            time_remaining = self.task_deadline - self.get_ist_now()
                             hours_remaining = time_remaining.total_seconds() / 3600
                             print(f"   ⏳ {hours_remaining:.1f}h until deadline")
                         
